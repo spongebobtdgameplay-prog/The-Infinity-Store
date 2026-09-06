@@ -12,6 +12,7 @@
   let WarmupWrapper = null;
   let ActualPreloadProgress = null;
   let PlayableAssetGate = false;
+  let GameplayStarted = false;
 
   const ApplyBuildVersion = () => {
     const Node = document.getElementById("BuildVersion");
@@ -19,6 +20,7 @@
   };
 
   const ShowBootLoading = () => {
+    if (GameplayStarted || window.__STORE_GAMEPLAY_STARTED__) return;
     const BootScreen = document.getElementById("BootScreen");
     const Panel = document.getElementById("BootLoadPanel");
     const Stage = document.getElementById("BootStageLabel");
@@ -32,9 +34,15 @@
   ShowBootLoading();
 
   const BuildObserver = new MutationObserver(() => {
+    ApplyBuildVersion();
     ShowBootLoading();
   });
-  BuildObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+  BuildObserver.observe(document.body, { childList: true, subtree: true });
+
+  addEventListener("store-gameplay-started", () => {
+    GameplayStarted = true;
+    BuildObserver.disconnect();
+  }, { once: true });
 
   Object.defineProperty(window, "__STORE_VERSION__", {
     configurable: true,
@@ -150,7 +158,7 @@
       AccountObserver.disconnect();
       const Overlay = document.getElementById("StoreAccountOverlay");
       const State = MultiplayerValue?.GetState?.();
-      if (Overlay && !State?.account) Overlay.hidden = false;
+      if (Overlay && !State?.account && !GameplayStarted) Overlay.hidden = false;
     }, FastAccountWindowMs + 40);
   }
 
