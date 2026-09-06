@@ -5,12 +5,6 @@ if (!Game?.ActiveChunks || !Game?.PreparedChunks || !Game?.CollisionBoxes) {
 }
 
 const PartitionWork = new WeakSet();
-const RearWork = new WeakSet();
-
-function BoundsOf(Object) {
-  Object.updateWorldMatrix(true, true);
-  return new THREE.Box3().setFromObject(Object);
-}
 
 function RemoveLegacyDisplayFrames(Chunk) {
   const Remove = [];
@@ -23,6 +17,39 @@ function RemoveLegacyDisplayFrames(Chunk) {
     ) Remove.push(Object);
   });
   for (const Object of Remove) Object.parent?.remove(Object);
+}
+
+function RemoveRearClosure(Chunk) {
+  if (!Chunk?.Group) return;
+
+  const Remove = [];
+  Chunk.Group.traverse?.(Object => {
+    const Name = String(Object?.name || "");
+    if (
+      Name === "RearStoreClosureR80" ||
+      Name === "RearStoreWallR80" ||
+      Name === "RearStoreBaseboardR80" ||
+      Object?.userData?.RearStoreWallR80 === true
+    ) Remove.push(Object);
+  });
+
+  for (const Object of Remove) Object.parent?.remove(Object);
+
+  const RemovedEntries = new Set(
+    (Chunk.CollisionEntries || []).filter(Entry => Entry?.Type === "RearStoreWallR80")
+  );
+
+  if (RemovedEntries.size) {
+    Chunk.CollisionEntries = (Chunk.CollisionEntries || []).filter(Entry => !RemovedEntries.has(Entry));
+    for (let Index = Game.CollisionBoxes.length - 1; Index >= 0; Index -= 1) {
+      const Entry = Game.CollisionBoxes[Index];
+      if (RemovedEntries.has(Entry) || Entry?.Type === "RearStoreWallR80") Game.CollisionBoxes.splice(Index, 1);
+    }
+  }
+
+  if (Array.isArray(Chunk.StructureBounds)) {
+    Chunk.StructureBounds = Chunk.StructureBounds.filter(Box => Box?.userData?.RearStoreWallR80 !== true);
+  }
 }
 
 function BrightPartitionMaterial(Material, Color) {
@@ -40,6 +67,7 @@ async function FinishPartitions(Chunk) {
   PartitionWork.add(Chunk);
   try {
     RemoveLegacyDisplayFrames(Chunk);
+    RemoveRearClosure(Chunk);
     const Partitions = [];
     Chunk.Group?.traverse?.(Object => {
       if (Object?.name === "ShowroomPartition" && Object.isMesh) Partitions.push(Object);
@@ -56,69 +84,22 @@ async function FinishPartitions(Chunk) {
         Partition.userData.FinishColorR83 = true;
       }
       Partition.userData.MerchandisingWallR80 = true;
-
     }
   } finally {
     PartitionWork.delete(Chunk);
   }
 }
 
-function AddRearCollision(Chunk, Bounds) {
-  let Entry = Chunk.CollisionEntries.find(Value => Value?.Type === "RearStoreWallR80");
-  if (!Entry) {
-    Entry = { ChunkId: Chunk.Id, Type: "RearStoreWallR80" };
-    Chunk.CollisionEntries.push(Entry);
-  }
-  Entry.Box = Bounds.clone();
-  Entry.OriginalBox = Bounds.clone();
-  Entry.OriginalLegacyBox = Bounds.clone();
-  Entry.Active = Boolean(Chunk.Active);
-  Entry.LegacyCollisionDisabled = false;
-  Entry.PreciseGeometry = false;
-  if (Chunk.Active && !Game.CollisionBoxes.includes(Entry)) Game.CollisionBoxes.push(Entry);
-  if (!Chunk.StructureBounds.some(Box => Box?.userData?.RearStoreWallR80)) {
-    const Structure = Bounds.clone();
-    Structure.userData = { RearStoreWallR80: true };
-    Chunk.StructureBounds.push(Structure);
-  }
-}
-
 async function EnsureRearClosure() {
-  const Chunk = Game.ActiveChunks.get(0) || [...Game.PreparedChunks.values()].find(Value => Value?.Index === 0);
-  if (!Chunk?.Ready || !Chunk.Group || RearWork.has(Chunk) || Chunk.Group.userData?.PresentationReadyR83) return;
-  RearWork.add(Chunk);
-  try {
-    RemoveLegacyDisplayFrames(Chunk);
-    let Group = Chunk.Group.getObjectByName("RearStoreClosureR80");
-    const RearZ = Chunk.TopZ + 0.08;
-    if (!Group) {
-      const WallSource = Chunk.Group.getObjectByName("WallLeft");
-      const BaseSource = Chunk.Group.getObjectByName("BaseboardLeft");
-      const WallMaterial = BrightPartitionMaterial(WallSource?.material, 0xc2bcb1) || new THREE.MeshStandardMaterial({ color: 0xc2bcb1, roughness: 0.94 });
-      const BaseMaterial = BrightPartitionMaterial(BaseSource?.material, 0x8e8577) || new THREE.MeshStandardMaterial({ color: 0x8e8577, roughness: 0.78, metalness: 0.12 });
-      Group = new THREE.Group();
-      Group.name = "RearStoreClosureR80";
-      Group.userData.ChunkId = Chunk.Id;
-      const Wall = new THREE.Mesh(new THREE.BoxGeometry(34, 3.80, 0.22), WallMaterial);
-      Wall.name = "RearStoreWallR80";
-      Wall.position.set(0, 1.86, RearZ);
-      const Base = new THREE.Mesh(new THREE.BoxGeometry(33.7, 0.18, 0.26), BaseMaterial);
-      Base.name = "RearStoreBaseboardR80";
-      Base.position.set(0, 0.09, RearZ - 0.02);
-      Group.add(Wall, Base);
-      Chunk.Group.add(Group);
-      Wall.updateWorldMatrix(true, true);
-      AddRearCollision(Chunk, BoundsOf(Wall));
-    }
-
-  } finally {
-    RearWork.delete(Chunk);
-  }
+  for (const Chunk of Game.ActiveChunks.values()) RemoveRearClosure(Chunk);
+  for (const Chunk of Game.PreparedChunks.values()) RemoveRearClosure(Chunk);
+  return false;
 }
 
 async function ProcessChunk(Chunk) {
   if (!Chunk?.Ready || Chunk.Cancelled || Chunk.Group.userData?.PresentationReadyR83) return;
   RemoveLegacyDisplayFrames(Chunk);
+  RemoveRearClosure(Chunk);
   await FinishPartitions(Chunk);
 }
 
@@ -128,8 +109,7 @@ async function ProcessAll() {
   await EnsureRearClosure();
 }
 
-// Initial boot pass only. Runtime chunks are finished by presentation-ready.
 ProcessAll().catch(Error => console.warn("Initial store finish failed", Error));
 
-window.__STORE_FINISH_R80__ = { ProcessAll, ProcessChunk, EnsureRearClosure };
-window.__STORE_FINISH_BUILD__ = "V0.35.16-PIPELINE";
+window.__STORE_FINISH_R80__ = { ProcessAll, ProcessChunk, EnsureRearClosure, RemoveRearClosure };
+window.__STORE_FINISH_BUILD__ = "V0.35.57-NO-REAR-CLOSURE";
