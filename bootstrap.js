@@ -1,4 +1,4 @@
-const Cache = "20260906-v03558-boot-gate1";
+const Cache = "20260906-v03558-boot-gate2";
 const Version = "0.35.58";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
