@@ -73,7 +73,10 @@ function PartitionsFinished(Chunk) {
 
 function RearFinished(Chunk) {
   if (Chunk.Index !== 0) return true;
-  return Boolean(Chunk.Group.getObjectByName("RearStoreClosureR80"));
+  return Boolean(
+    !Chunk.Group.getObjectByName("RearStoreWallR80") &&
+    !Chunk.Group.getObjectByName("RearStoreBaseboardR80")
+  );
 }
 
 function RemoveTerminalBeacons(Chunk) {
@@ -636,4 +639,4 @@ window.__STORE_PRESENTATION_READY_R83__ = {
   CoreReady,
   Discover
 };
-window.__STORE_PRESENTATION_READY_BUILD__ = "V0.35.51-LAYOUT-AUTHORITY";
+window.__STORE_PRESENTATION_READY_BUILD__ = "V0.35.58-NO-REAR-WALL-GATE";
