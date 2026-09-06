@@ -1,5 +1,5 @@
-const Cache = "20260901-v03552-stableview1";
-const Version = "0.35.52";
+const Cache = "20260906-v03555-loader-architecture1";
+const Version = "0.35.55";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -25,10 +25,10 @@ for (const LinkData of FaviconLinks) {
 const BuildVersion = document.getElementById("BuildVersion");
 if (BuildVersion) BuildVersion.textContent = `BUILD V${Version}`;
 window.__STORE_VERSION__ = Version;
+window.__STORE_BOOT_CRITICAL__ = true;
 
 const BootStatus = document.getElementById("BootStatus");
 const BootStageLabel = document.getElementById("BootStageLabel");
-window.__STORE_BOOT_CRITICAL__ = true;
 const BootWorldPercent = document.getElementById("BootWorldPercent");
 const BootWorldProgressFill = document.getElementById("BootWorldProgressFill");
 const BootWorldCounts = document.getElementById("BootWorldCounts");
@@ -44,45 +44,9 @@ const StartGate = {
 
 window.__STORE_START_GATE__ = StartGate;
 
-function SetWorldProgress(Ready, Total, Stage = "", Detail = "") {
-  const SafeTotal = Math.max(1, Number(Total) || 1);
-  const SafeReady = THREE_MATH_CLAMP(Number(Ready) || 0, 0, SafeTotal);
-  const Percent = Math.round((SafeReady / SafeTotal) * 100);
-
-  if (BootWorldPercent) BootWorldPercent.textContent = `${Percent}%`;
-  if (BootWorldProgressFill) BootWorldProgressFill.style.width = `${Percent}%`;
-  if (BootWorldCounts) {
-    BootWorldCounts.textContent =
-      `Required aisles: ${Math.floor(SafeReady)}/${SafeTotal} ready` +
-      (Detail ? ` • ${Detail}` : "");
-  }
-  if (Stage) SetBootStage(Stage);
-}
-
-function THREE_MATH_CLAMP(Value, Min, Max) {
+function Clamp(Value, Min, Max) {
   return Math.min(Max, Math.max(Min, Value));
 }
-
-window.addEventListener("store-world-buffer-progress", Event => {
-  const Detail = Event.detail || {};
-  SetWorldProgress(Detail.ready, Detail.total, Detail.stage, Detail.detail);
-});
-
-let LastWorldReady = 0;
-let LastWorldTotal = 4;
-
-window.__STORE_SET_BOOT_DETAIL__ = Text => {
-  if (!BootWorldCounts) return;
-  BootWorldCounts.textContent =
-    `Required aisles: ${LastWorldReady}/${LastWorldTotal} ready` +
-    (Text ? ` • ${String(Text)}` : "");
-};
-
-window.addEventListener("store-world-buffer-progress", Event => {
-  const Detail = Event.detail || {};
-  LastWorldReady = Math.max(0, Math.floor(Number(Detail.ready) || 0));
-  LastWorldTotal = Math.max(1, Math.floor(Number(Detail.total) || 4));
-});
 
 function SetBootStage(Text) {
   const Value = String(Text || "");
@@ -94,18 +58,40 @@ function SetBootStage(Text) {
 
 window.__STORE_SET_BOOT_STAGE__ = SetBootStage;
 
-function StartButtonNode() {
-  return document.getElementById("StartButton");
+let LastWorldReady = 0;
+let LastWorldTotal = 4;
+
+function SetWorldProgress(Ready, Total, Stage = "", Detail = "") {
+  const SafeTotal = Math.max(1, Number(Total) || 1);
+  const SafeReady = Clamp(Number(Ready) || 0, 0, SafeTotal);
+  const Percent = Math.round((SafeReady / SafeTotal) * 100);
+  LastWorldReady = Math.max(0, Math.floor(SafeReady));
+  LastWorldTotal = Math.max(1, Math.floor(SafeTotal));
+
+  if (BootWorldPercent) BootWorldPercent.textContent = `${Percent}%`;
+  if (BootWorldProgressFill) BootWorldProgressFill.style.width = `${Percent}%`;
+  if (BootWorldCounts) {
+    BootWorldCounts.textContent =
+      `Required aisles: ${Math.floor(SafeReady)}/${SafeTotal} ready` +
+      (Detail ? ` • ${Detail}` : "");
+  }
+  if (Stage) SetBootStage(Stage);
 }
 
-function AssetsActuallyReady() {
-  const Progress = window.__STORE_PRELOAD_PROGRESS__;
-  return Boolean(
-    Progress &&
-    Number(Progress.total) > 0 &&
-    Number(Progress.loaded) === Number(Progress.total) &&
-    Number(Progress.failed) === 0
-  );
+window.addEventListener("store-world-buffer-progress", Event => {
+  const Detail = Event.detail || {};
+  SetWorldProgress(Detail.ready, Detail.total, Detail.stage, Detail.detail);
+});
+
+window.__STORE_SET_BOOT_DETAIL__ = Text => {
+  if (!BootWorldCounts) return;
+  BootWorldCounts.textContent =
+    `Required aisles: ${LastWorldReady}/${LastWorldTotal} ready` +
+    (Text ? ` • ${String(Text)}` : "");
+};
+
+function StartButtonNode() {
+  return document.getElementById("StartButton");
 }
 
 function CurrentWorldActuallyReady() {
@@ -127,12 +113,10 @@ function CurrentWorldActuallyReady() {
 
 function RefreshStartGate() {
   const CurrentGeneration = Number(window.__STORE_WORLD_GENERATION__) || 0;
-  const AssetsReadyNow = StartGate.AssetsReady && AssetsActuallyReady();
   const WorldReadyNow = CurrentWorldActuallyReady();
 
   StartGate.Ready = Boolean(
     StartGate.CoreReady &&
-    AssetsReadyNow &&
     WorldReadyNow &&
     StartGate.Generation === CurrentGeneration
   );
@@ -214,7 +198,6 @@ function ShowBootError(Error) {
   const Message = String(Error?.message || Error || "Unknown boot error.");
   StartGate.CoreReady = false;
   StartGate.WorldReady = false;
-  StartGate.AssetsReady = false;
   StartGate.Ready = false;
   StartGate.Reason = "Store loading failed.";
   RefreshStartGate();
@@ -227,6 +210,8 @@ function ShowBootError(Error) {
 }
 
 let CoreReady = false;
+let AccountReadyPromise = null;
+let AssetWarmupPromise = null;
 
 async function EnsureCurrentWorldReady() {
   const Game = window.__STORE_GAME__;
@@ -260,9 +245,7 @@ async function EnsureCurrentWorldReady() {
       const Missing = Array.isArray(Failure?.Missing) && Failure.Missing.length
         ? ` Missing: ${Failure.Missing.join(", ")}.`
         : "";
-      throw new Error(
-        `Aisle ${Index + 1} did not finish before the boot deadline.${Missing}`
-      );
+      throw new Error(`Aisle ${Index + 1} did not finish before the boot deadline.${Missing}`);
     }
 
     const Report = Presentation.StrictReadinessReport?.(Chunk);
@@ -289,15 +272,60 @@ async function EnsureCurrentWorldReady() {
 window.__STORE_ENSURE_START_READY__ = EnsureCurrentWorldReady;
 
 try {
-  SetBootStage("Loading account system...");
+  SetBootStage("Loading account system in background...");
   await import(`./multiplayer.js?v=${Cache}`);
-  const AccountReady = window.__STORE_MULTIPLAYER__.WaitForAccount();
 
-  SetBootStage("Starting asset tracking...");
+  const Multiplayer = window.__STORE_MULTIPLAYER__;
+  if (!Multiplayer?.WaitForAccount) throw new Error("Account system did not initialize.");
+
+  AccountReadyPromise = Promise.resolve(Multiplayer.WaitForAccount());
+  window.__STORE_ACCOUNT_READY_PROMISE__ = AccountReadyPromise;
+  window.__STORE_ACCOUNT_READY__ = false;
+
+  const HasSavedSession = Boolean(localStorage.getItem("InfinityStoreSessionV1"));
+  if (HasSavedSession) {
+    const AccountOverlay = document.getElementById("StoreAccountOverlay");
+    if (AccountOverlay) AccountOverlay.hidden = true;
+  }
+
+  AccountReadyPromise
+    .then(() => {
+      window.__STORE_ACCOUNT_READY__ = true;
+      window.__STORE_ACCOUNT_DEFERRED__ = false;
+    })
+    .catch(Error => {
+      window.__STORE_ACCOUNT_READY__ = false;
+      window.__STORE_ACCOUNT_ERROR__ = String(Error?.message || Error || "ACCOUNT_FAILED");
+    });
+
+  setTimeout(() => {
+    if (!window.__STORE_ACCOUNT_READY__) window.__STORE_ACCOUNT_DEFERRED__ = true;
+  }, 3000);
+
+  SetBootStage("Starting asset warm-up now...");
   await import(`./loading-prewarm-r38.js?v=${Cache}`);
 
-  SetBootStage("Checking your saved account...");
-  await AccountReady;
+  const StartAssetWarmup = window.__STORE_START_ASSET_WARMUP__;
+  if (typeof StartAssetWarmup !== "function") {
+    throw new Error("Asset warm-up owner is unavailable.");
+  }
+
+  AssetWarmupPromise = Promise.resolve(StartAssetWarmup());
+  window.__STORE_BACKGROUND_ASSET_WARMUP__ = AssetWarmupPromise;
+  AssetWarmupPromise
+    .then(Result => {
+      const Loaded = Number(Result?.loaded) || 0;
+      const Total = Number(Result?.total) || 0;
+      const Failed = Number(Result?.failed) || 0;
+      StartGate.AssetsReady = Total > 0 && Loaded === Total && Failed === 0;
+      window.__STORE_ASSET_WARMUP_READY__ = StartGate.AssetsReady;
+      RefreshStartGate();
+    })
+    .catch(Error => {
+      StartGate.AssetsReady = false;
+      window.__STORE_ASSET_WARMUP_READY__ = false;
+      console.warn("Background asset warm-up did not fully finish", Error);
+    });
 
   SetBootStage("Loading interface and performance systems...");
   await OptionalImport("./three-text-utility-r73.js", "3D text utility");
@@ -323,8 +351,8 @@ try {
   window.__STORE_VERSION__ = Version;
   window.__STORE_GAME_BUILD__ = `V${Version}`;
 
-  SetBootStage("Connecting multiplayer to the store...");
-  await window.__STORE_MULTIPLAYER__.AttachGame();
+  SetBootStage("Connecting multiplayer systems to the store...");
+  await Multiplayer.AttachGame();
 
   SetBootStage("Loading aisle streaming and showroom systems...");
   await OptionalImport("./forward-generation-r78.js", "Forward-only infinite generation");
@@ -349,39 +377,16 @@ try {
 
   await EnsureCurrentWorldReady();
 
-  SetBootStage("Warming remaining tracked assets after playable aisles...");
-  const StartAssetWarmup = window.__STORE_START_ASSET_WARMUP__;
-  if (typeof StartAssetWarmup !== "function") {
-    throw new Error("Asset warm-up owner is unavailable.");
-  }
-  const AssetResult = await StartAssetWarmup();
-  if (
-    !AssetResult ||
-    Number(AssetResult.loaded) !== Number(AssetResult.total) ||
-    Number(AssetResult.failed) !== 0
-  ) {
-    const Failed = Number(AssetResult?.failed) || 0;
-    const Loaded = Number(AssetResult?.loaded) || 0;
-    const Total = Number(AssetResult?.total) || 0;
-    const FailedNames = Array.isArray(AssetResult?.failedAssetLabels)
-      ? AssetResult.failedAssetLabels.join(", ")
-      : "";
-    throw new Error(
-      `Asset warm-up incomplete: ${Loaded}/${Total} loaded, ${Failed} failed` +
-      (FailedNames ? ` • ${FailedNames}` : ".")
-    );
-  }
-  StartGate.AssetsReady = true;
-  RefreshStartGate();
-
   SetBootStage("Finalizing movement contact and the main menu...");
   await import(`./movement-contact-compat-r25.js?v=${Cache}`);
   await OptionalImport("./final-contact-r19.js", "Final limb contact");
   await OptionalImport("./runtime-main-menu-r83.js", "Start-screen style resumable main menu");
+
   CoreReady = true;
   StartGate.CoreReady = true;
   window.__STORE_BOOT_CRITICAL__ = false;
   RefreshStartGate();
+  Multiplayer.NotifyCoreReady?.();
 } catch (Error) {
   window.__STORE_BOOT_CRITICAL__ = false;
   console.error("Core store boot failed.", Error);
@@ -394,13 +399,15 @@ if (ReadyButton && CoreReady && RefreshStartGate()) {
   ReadyButton.style.cursor = "";
   const Seed = Number(window.__STORE_WORLD_SEED__) || 0;
   const Assets = window.__STORE_PRELOAD_PROGRESS__;
+  const AssetSummary = Assets
+    ? `${Assets.loaded || 0}/${Assets.total || 0} assets warmed in background`
+    : "asset warm-up running in background";
   SetWorldProgress(
     4,
     4,
-    `Ready to enter • world and assets complete • seed ${Seed}`,
-    `${Assets?.loaded || 0}/${Assets?.total || 0} assets loaded successfully`
+    `Ready to enter • playable world complete • seed ${Seed}`,
+    AssetSummary
   );
-  window.__STORE_MULTIPLAYER__?.NotifyCoreReady?.();
 }
 
 window.__STORE_BOOTSTRAP_BUILD__ = `V${Version}`;
