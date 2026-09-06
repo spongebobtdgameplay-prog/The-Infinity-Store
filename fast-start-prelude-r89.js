@@ -143,23 +143,38 @@
   });
 
   if (HasSavedSession) {
-    const HideRestoreOverlay = () => {
-      if (performance.now() - StartedAt >= FastAccountWindowMs) return;
+    let AccountWatchDone = false;
+
+    const UpdateRestoreOverlay = () => {
+      if (AccountWatchDone || GameplayStarted) return;
       const Overlay = document.getElementById("StoreAccountOverlay");
+      if (!Overlay) return;
       const State = MultiplayerValue?.GetState?.();
-      if (Overlay && !State?.account) Overlay.hidden = true;
+
+      if (State?.account) {
+        Overlay.hidden = true;
+        AccountWatchDone = true;
+        return;
+      }
+
+      if (window.__STORE_BOOT_CRITICAL__ !== false) {
+        Overlay.hidden = true;
+        return;
+      }
+
+      Overlay.hidden = false;
+      AccountWatchDone = true;
     };
 
-    const AccountObserver = new MutationObserver(HideRestoreOverlay);
+    const AccountObserver = new MutationObserver(UpdateRestoreOverlay);
     AccountObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
-    const RestoreInterval = setInterval(HideRestoreOverlay, 50);
-    setTimeout(() => {
-      clearInterval(RestoreInterval);
-      AccountObserver.disconnect();
-      const Overlay = document.getElementById("StoreAccountOverlay");
-      const State = MultiplayerValue?.GetState?.();
-      if (Overlay && !State?.account && !GameplayStarted) Overlay.hidden = false;
-    }, FastAccountWindowMs + 40);
+    const RestoreInterval = setInterval(() => {
+      UpdateRestoreOverlay();
+      if (AccountWatchDone || GameplayStarted) {
+        clearInterval(RestoreInterval);
+        AccountObserver.disconnect();
+      }
+    }, 60);
   }
 
   try {
