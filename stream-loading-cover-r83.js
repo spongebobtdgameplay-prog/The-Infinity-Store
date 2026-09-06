@@ -17,7 +17,7 @@ Overlay.setAttribute("aria-hidden", "true");
 Overlay.innerHTML = `
   <div class="StreamLoadingInnerR83">
     <strong>DISTANT AISLE FORMING</strong>
-    <span>The showroom is hidden in the haze...</span>
+    <span>The next showroom is being prepared...</span>
     <i></i>
   </div>
 `;
@@ -68,28 +68,23 @@ Style.textContent = `
 document.head.appendChild(Style);
 document.body.appendChild(Overlay);
 
-const PRIORITY_DISTANCE = 48;
-const NOTICE_DISTANCE = 2.75;
-const NOTICE_MAX_MS = 2200;
-const STRICT_AHEAD = 2;
+const PRIORITY_DISTANCE = 72;
+const NOTICE_DISTANCE = 1.35;
+const NOTICE_MAX_MS = 1600;
+const STRICT_AHEAD = 3;
 const STRICT_BEHIND = 1;
+const HORIZON_PROXY_LENGTH = 180;
+const HORIZON_PROXY_WIDTH = 34;
+const HORIZON_PROXY_HEIGHT = 3.72;
+const HORIZON_OVERLAP = 2.4;
+const PriorityFlights = new Map();
+const LegacyStreamBarrierPattern = /StreamLoading|LoadingGate|StoreBoundary|StreamBarrier|FrontierBarrier|StreamingBarrier/i;
 
-let HazeGroup = null;
-let HazeChunk = null;
-let HazeActive = false;
 let OverlayVisible = false;
 let HorizonProxyGroup = null;
 let HorizonProxyBoundary = Number.NaN;
-
-const HORIZON_PROXY_LENGTH = 150;
-const HORIZON_PROXY_WIDTH = 34;
-const HORIZON_PROXY_HEIGHT = 3.72;
 let NoticeIndex = Number.NaN;
 let NoticeStartedAt = -Infinity;
-const PriorityFlights = new Map();
-const HazeMaterials = [];
-const AmbientMaterials = [];
-const LegacyStreamBarrierPattern = /StreamLoading|LoadingGate|StoreBoundary|StreamBarrier|FrontierBarrier|StreamingBarrier/i;
 
 function IsLegacyStreamBarrierEntry(Entry) {
   if (!Entry) return false;
@@ -124,17 +119,20 @@ function PurgeLegacyStreamBarriers() {
     }
   }
 
-  for (let Index = Game.Scene.children.length - 1; Index >= 0; Index -= 1) {
-    const Object = Game.Scene.children[Index];
-    if (!Object || Object === HazeGroup) continue;
+  const Remove = [];
+  Game.Scene.traverse?.(Object => {
+    if (!Object || Object === HorizonProxyGroup) return;
     const Name = String(Object.name || "");
     if (
       LegacyStreamBarrierPattern.test(Name) ||
-      Object.userData?.StreamLoadingBarrierR83 === true
+      Object.userData?.StreamLoadingBarrierR83 === true ||
+      Object.name === "StreamDistanceHazeR101"
     ) {
-      Game.Scene.remove(Object);
+      Remove.push(Object);
     }
-  }
+  });
+
+  for (const Object of Remove) Object.parent?.remove(Object);
 }
 
 function EnsureHorizonProxy() {
@@ -155,30 +153,31 @@ function EnsureHorizonProxy() {
     new THREE.BoxGeometry(HORIZON_PROXY_WIDTH, 0.08, HORIZON_PROXY_LENGTH),
     FloorMaterial
   );
-  Floor.name = "HorizonFloorR105";
+  Floor.name = "HorizonFloorR106";
   Floor.position.set(0, -0.04, 0);
 
   const Ceiling = new THREE.Mesh(
     new THREE.BoxGeometry(HORIZON_PROXY_WIDTH, 0.08, HORIZON_PROXY_LENGTH),
     CeilingMaterial
   );
-  Ceiling.name = "HorizonCeilingR105";
+  Ceiling.name = "HorizonCeilingR106";
   Ceiling.position.set(0, HORIZON_PROXY_HEIGHT, 0);
 
   const LeftWall = new THREE.Mesh(
     new THREE.BoxGeometry(0.16, HORIZON_PROXY_HEIGHT, HORIZON_PROXY_LENGTH),
     WallMaterial
   );
-  LeftWall.name = "HorizonWallLeftR105";
+  LeftWall.name = "HorizonWallLeftR106";
   LeftWall.position.set(-16.92, HORIZON_PROXY_HEIGHT * 0.5, 0);
 
   const RightWall = LeftWall.clone();
-  RightWall.name = "HorizonWallRightR105";
+  RightWall.name = "HorizonWallRightR106";
   RightWall.position.x = 16.92;
 
   for (const Object of [Floor, Ceiling, LeftWall, RightWall]) {
     Object.userData.StreamAmbientR101 = true;
     Object.userData.DecorationNoCollision = true;
+    Object.userData.IgnoreRayCollisionR35 = true;
     Object.frustumCulled = true;
     Group.add(Object);
   }
@@ -196,14 +195,11 @@ function EnsureHorizonProxy() {
     fog: true,
     toneMapped: false
   });
-  const Lights = new THREE.InstancedMesh(
-    LightGeometry,
-    LightMaterial,
-    LightRows.length
-  );
-  Lights.name = "HorizonLightGlowR105";
+  const Lights = new THREE.InstancedMesh(LightGeometry, LightMaterial, LightRows.length);
+  Lights.name = "HorizonLightGlowR106";
   Lights.userData.StreamAmbientR101 = true;
   Lights.userData.DecorationNoCollision = true;
+  Lights.userData.IgnoreRayCollisionR35 = true;
 
   const Matrix = new THREE.Matrix4();
   for (let Index = 0; Index < LightRows.length; Index += 1) {
@@ -231,7 +227,8 @@ function UpdateHorizonProxy() {
       !Chunk?.Ready ||
       Chunk.Cancelled ||
       !Chunk.Active ||
-      Chunk.Group?.parent !== Game.Scene
+      Chunk.Group?.parent !== Game.Scene ||
+      Chunk.Group?.visible === false
     ) continue;
     if (!Furthest || Chunk.Index > Furthest.Index) Furthest = Chunk;
   }
@@ -241,14 +238,10 @@ function UpdateHorizonProxy() {
     return;
   }
 
-  const Boundary = Number(Furthest.BottomZ) - 0.18;
+  const Boundary = Number(Furthest.BottomZ) + HORIZON_OVERLAP;
   if (Boundary !== HorizonProxyBoundary) {
     HorizonProxyBoundary = Boundary;
-    Group.position.set(
-      0,
-      0,
-      Boundary - HORIZON_PROXY_LENGTH * 0.5
-    );
+    Group.position.set(0, 0, Boundary - HORIZON_PROXY_LENGTH * 0.5);
     Group.updateMatrix();
     Group.updateMatrixWorld(true);
   }
@@ -285,202 +278,6 @@ function IsAlreadyVisible(Chunk) {
   return Chunk.Group.parent === Game.Scene && Chunk.Group.visible !== false;
 }
 
-function CreateHazeTexture() {
-  const Canvas = document.createElement("canvas");
-  Canvas.width = 128;
-  Canvas.height = 64;
-  const Context = Canvas.getContext("2d");
-  const Image = Context.createImageData(Canvas.width, Canvas.height);
-
-  for (let Y = 0; Y < Canvas.height; Y += 1) {
-    for (let X = 0; X < Canvas.width; X += 1) {
-      const Index = (Y * Canvas.width + X) * 4;
-      const EdgeX = Math.min(1, Math.min(X, Canvas.width - 1 - X) / 11);
-      const EdgeY = Math.min(1, Math.min(Y, Canvas.height - 1 - Y) / 7);
-      const Edge = 0.52 + 0.48 * Math.min(EdgeX, EdgeY);
-      const Noise =
-        Math.sin(X * 0.91 + Y * 1.37) * 0.045 +
-        Math.sin(X * 0.17 - Y * 0.63) * 0.035;
-      const Alpha = THREE.MathUtils.clamp((0.78 + Noise) * Edge, 0.34, 0.88);
-
-      Image.data[Index] = 36;
-      Image.data[Index + 1] = 38;
-      Image.data[Index + 2] = 31;
-      Image.data[Index + 3] = Math.round(Alpha * 255);
-    }
-  }
-
-  Context.putImageData(Image, 0, 0);
-  const Texture = new THREE.CanvasTexture(Canvas);
-  Texture.colorSpace = THREE.SRGBColorSpace;
-  Texture.minFilter = THREE.LinearFilter;
-  Texture.magFilter = THREE.LinearFilter;
-  Texture.generateMipmaps = false;
-  return Texture;
-}
-
-function EnsureHaze() {
-  if (HazeGroup) return HazeGroup;
-
-  const Texture = CreateHazeTexture();
-  HazeGroup = new THREE.Group();
-  HazeGroup.name = "StreamDistanceHazeR101";
-  HazeGroup.userData.StreamAmbientR101 = true;
-  HazeGroup.userData.DecorationNoCollision = true;
-  HazeGroup.userData.IgnoreRayCollisionR35 = true;
-
-  const Layers = [
-    { Z: 0.0, Opacity: 0.58, Scale: 1.00 },
-    { Z: -1.3, Opacity: 0.42, Scale: 1.02 },
-    { Z: -3.0, Opacity: 0.31, Scale: 1.04 },
-    { Z: -5.2, Opacity: 0.24, Scale: 1.07 }
-  ];
-
-  for (const Layer of Layers) {
-    const Material = new THREE.MeshBasicMaterial({
-      map: Texture,
-      color: 0xffffff,
-      transparent: true,
-      opacity: Layer.Opacity,
-      depthWrite: false,
-      depthTest: true,
-      side: THREE.DoubleSide,
-      toneMapped: false
-    });
-    Material.userData.StreamBaseOpacityR101 = Layer.Opacity;
-    HazeMaterials.push(Material);
-
-    const Plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(34.6 * Layer.Scale, 3.95 * Layer.Scale),
-      Material
-    );
-    Plane.position.set(0, 1.88, Layer.Z);
-    Plane.frustumCulled = true;
-    Plane.userData.StreamAmbientR101 = true;
-    Plane.userData.DecorationNoCollision = true;
-    HazeGroup.add(Plane);
-  }
-
-  const LightRows = [
-    { Z: -6.5, Y: 3.18, Width: 4.8, Opacity: 0.34 },
-    { Z: -11.0, Y: 3.12, Width: 4.0, Opacity: 0.25 },
-    { Z: -16.5, Y: 3.08, Width: 3.2, Opacity: 0.18 }
-  ];
-
-  for (let RowIndex = 0; RowIndex < LightRows.length; RowIndex += 1) {
-    const Row = LightRows[RowIndex];
-
-    for (const X of [-10.2, 0, 10.2]) {
-      const Material = new THREE.MeshBasicMaterial({
-        color: 0xffe1ad,
-        transparent: true,
-        opacity: Row.Opacity,
-        depthWrite: false,
-        depthTest: true,
-        toneMapped: false
-      });
-      Material.userData.StreamBaseOpacityR102 = Row.Opacity;
-      Material.userData.StreamPulseOffsetR102 =
-        RowIndex * 0.71 + Math.abs(X) * 0.037;
-      AmbientMaterials.push(Material);
-
-      const Glow = new THREE.Mesh(
-        new THREE.PlaneGeometry(Row.Width, 0.055),
-        Material
-      );
-      Glow.name = "StreamAmbientLightR102";
-      Glow.position.set(X, Row.Y, Row.Z);
-      Glow.userData.StreamAmbientR101 = true;
-      Glow.userData.DecorationNoCollision = true;
-      Glow.frustumCulled = true;
-      HazeGroup.add(Glow);
-    }
-  }
-
-  const HorizonMaterial = new THREE.MeshBasicMaterial({
-    color: 0x8f866d,
-    transparent: true,
-    opacity: 0.09,
-    depthWrite: false,
-    depthTest: true,
-    toneMapped: false
-  });
-  HorizonMaterial.userData.StreamBaseOpacityR102 = 0.09;
-  AmbientMaterials.push(HorizonMaterial);
-
-  const Horizon = new THREE.Mesh(
-    new THREE.PlaneGeometry(31.5, 0.78),
-    HorizonMaterial
-  );
-  Horizon.name = "StreamAmbientHorizonR102";
-  Horizon.position.set(0, 1.0, -12.5);
-  Horizon.userData.StreamAmbientR101 = true;
-  Horizon.userData.DecorationNoCollision = true;
-  HazeGroup.add(Horizon);
-
-  HazeGroup.visible = false;
-  Game.Scene.add(HazeGroup);
-  return HazeGroup;
-}
-
-function PositionHaze(CurrentChunk) {
-  if (!CurrentChunk) return;
-  const Group = EnsureHaze();
-  if (HazeChunk !== CurrentChunk) {
-    HazeChunk = CurrentChunk;
-    Group.position.set(0, 0, CurrentChunk.BottomZ - 0.35);
-    Group.updateWorldMatrix(true, true);
-  }
-}
-
-function SetHazeStrength(DistanceToEdge) {
-  const Strength = THREE.MathUtils.clamp(
-    0.82 + (30 - Math.min(30, DistanceToEdge)) * 0.004,
-    0.82,
-    0.94
-  );
-
-  for (const Material of HazeMaterials) {
-    const Base = Number(Material.userData.StreamBaseOpacityR101) || 0.3;
-    Material.opacity = Base * Strength;
-  }
-
-  const Time = performance.now() * 0.001;
-  for (const Material of AmbientMaterials) {
-    const Base = Number(Material.userData.StreamBaseOpacityR102) || 0.1;
-    const Offset = Number(Material.userData.StreamPulseOffsetR102) || 0;
-    const Pulse = 0.94 + Math.sin(Time * 0.72 + Offset) * 0.06;
-    Material.opacity = Base * Strength * Pulse;
-  }
-}
-
-function SetHazeActive(Value, CurrentChunk = null, DistanceToEdge = 30) {
-  const Next = Boolean(Value);
-  const Changed = HazeActive !== Next;
-
-  if (Next) {
-    PositionHaze(CurrentChunk);
-    SetHazeStrength(DistanceToEdge);
-    HazeGroup.visible = true;
-  } else if (HazeGroup) {
-    HazeGroup.visible = false;
-  }
-
-  HazeActive = Next;
-  window.__STORE_STREAM_LOADING__ = Next;
-
-  if (Changed && !Next) PurgeLegacyStreamBarriers();
-}
-
-function SetOverlayVisible(Value) {
-  const Next = Boolean(Value);
-  if (OverlayVisible === Next) return;
-  OverlayVisible = Next;
-  Overlay.style.opacity = Next ? "1" : "0";
-  Overlay.style.visibility = Next ? "visible" : "hidden";
-  Overlay.setAttribute("aria-hidden", Next ? "false" : "true");
-}
-
 function PrioritizeIndex(Index) {
   if (!Number.isInteger(Index) || Index < 0) return null;
 
@@ -511,36 +308,43 @@ function PrioritizeIndex(Index) {
 }
 
 function EnsureStrictBuffer(CurrentIndex) {
-  const Order = [];
   for (let Offset = 1; Offset <= STRICT_AHEAD; Offset += 1) {
-    Order.push(CurrentIndex + Offset);
+    const Index = CurrentIndex + Offset;
+    const Chunk = FindChunk(Index);
+    if (!IsTraversalReady(Chunk)) PrioritizeIndex(Index);
   }
 
-  Order.push(CurrentIndex);
+  const Current = FindChunk(CurrentIndex);
+  if (!IsTraversalReady(Current)) PrioritizeIndex(CurrentIndex);
 
   for (let Offset = 1; Offset <= STRICT_BEHIND; Offset += 1) {
     const Index = CurrentIndex - Offset;
-    if (Index >= 0) Order.push(Index);
-  }
-
-  for (const Index of Order) {
+    if (Index < 0) break;
     const Chunk = FindChunk(Index);
     if (!IsTraversalReady(Chunk)) PrioritizeIndex(Index);
   }
 }
 
+function SetOverlayVisible(Value) {
+  const Next = Boolean(Value);
+  if (OverlayVisible === Next) return;
+  OverlayVisible = Next;
+  Overlay.style.opacity = Next ? "1" : "0";
+  Overlay.style.visibility = Next ? "visible" : "hidden";
+  Overlay.setAttribute("aria-hidden", Next ? "false" : "true");
+}
+
+function SetLoadingState(Value) {
+  window.__STORE_STREAM_LOADING__ = Boolean(Value);
+}
+
 function Show(CurrentChunk) {
   if (!CurrentChunk) return;
-  const DistanceToEdge = Math.max(
-    0,
-    Game.Camera.position.z - CurrentChunk.BottomZ
-  );
-  SetHazeActive(true, CurrentChunk, DistanceToEdge);
-  SetOverlayVisible(true);
+  SetLoadingState(true);
 }
 
 function Hide() {
-  SetHazeActive(false);
+  SetLoadingState(false);
   SetOverlayVisible(false);
   NoticeIndex = Number.NaN;
   NoticeStartedAt = -Infinity;
@@ -553,10 +357,7 @@ function Tick() {
     return;
   }
 
-  const CurrentIndex = Math.max(
-    0,
-    Game.ChunkIndexForZ(Game.Camera.position.z)
-  );
+  const CurrentIndex = Math.max(0, Game.ChunkIndexForZ(Game.Camera.position.z));
   const Current = Game.ActiveChunks.get(CurrentIndex);
   UpdateHorizonProxy();
 
@@ -572,11 +373,7 @@ function Tick() {
   let Next = FindChunk(NextIndex);
   let NextReady = IsTraversalReady(Next);
   let NextVisible = IsAlreadyVisible(Next);
-
-  const DistanceToForwardEdge = Math.max(
-    0,
-    Game.Camera.position.z - Current.BottomZ
-  );
+  const DistanceToForwardEdge = Math.max(0, Game.Camera.position.z - Current.BottomZ);
 
   if (!NextReady && DistanceToForwardEdge <= PRIORITY_DISTANCE) {
     PrioritizeIndex(NextIndex);
@@ -585,26 +382,24 @@ function Tick() {
   if (NextReady && !NextVisible) {
     Game.TryActivateIndex?.(NextIndex);
     Next = FindChunk(NextIndex);
+    NextReady = IsTraversalReady(Next);
     NextVisible = IsAlreadyVisible(Next);
   }
 
   if (NextVisible) {
-    if (!NextReady) PrioritizeIndex(NextIndex);
     Hide();
     requestAnimationFrame(Tick);
     return;
   }
 
-  SetHazeActive(true, Current, DistanceToForwardEdge);
+  SetLoadingState(true);
 
   if (DistanceToForwardEdge <= NOTICE_DISTANCE) {
     if (NoticeIndex !== NextIndex) {
       NoticeIndex = NextIndex;
       NoticeStartedAt = performance.now();
     }
-
-    const NoticeAge = performance.now() - NoticeStartedAt;
-    SetOverlayVisible(NoticeAge <= NOTICE_MAX_MS);
+    SetOverlayVisible(performance.now() - NoticeStartedAt <= NOTICE_MAX_MS);
   } else {
     SetOverlayVisible(false);
     NoticeIndex = Number.NaN;
@@ -614,13 +409,13 @@ function Tick() {
   requestAnimationFrame(Tick);
 }
 
-EnsureHaze();
+EnsureHorizonProxy();
 PurgeLegacyStreamBarriers();
 requestAnimationFrame(Tick);
 
 addEventListener("pagehide", () => {
-  SetHazeActive(false);
-  SetOverlayVisible(false);
+  Hide();
+  if (HorizonProxyGroup) HorizonProxyGroup.visible = false;
 }, { once: true });
 
 window.__STORE_STREAM_LOADING_R83__ = {
@@ -632,4 +427,4 @@ window.__STORE_STREAM_LOADING_R83__ = {
   IsTraversalReady,
   IsAlreadyVisible
 };
-window.__STORE_STREAM_LOADING_BUILD__ = "V0.35.52-STABLE-VIEW-HORIZON";
+window.__STORE_STREAM_LOADING_BUILD__ = "V0.35.56-NO-VISIBLE-FRONTIER";
