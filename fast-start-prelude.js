@@ -1,5 +1,5 @@
 (() => {
-  const BuildVersion = "0.35.53";
+  const BuildVersion = "0.35.54";
   const SessionKey = "InfinityStoreSessionV1";
   const ServerUrl = "https://the-infinity-store-vh88.onrender.com";
   const FastAccountWindowMs = 3000;
@@ -19,29 +19,23 @@
     if (Node && Node.textContent !== `BUILD V${BuildVersion}`) Node.textContent = `BUILD V${BuildVersion}`;
   };
 
-  const ShowBootLoading = () => {
+  const KeepBootVisible = () => {
     if (GameplayStarted || window.__STORE_GAMEPLAY_STARTED__) return;
     const BootScreen = document.getElementById("BootScreen");
     const Panel = document.getElementById("BootLoadPanel");
     const Stage = document.getElementById("BootStageLabel");
-    BootScreen?.classList.add("ScreenVisible");
-    Panel?.classList.remove("Hidden");
-    Panel?.removeAttribute("hidden");
+    if (BootScreen && !BootScreen.classList.contains("ScreenVisible")) BootScreen.classList.add("ScreenVisible");
+    if (Panel?.classList.contains("Hidden")) Panel.classList.remove("Hidden");
+    if (Panel?.hasAttribute("hidden")) Panel.removeAttribute("hidden");
     if (Stage && !Stage.textContent.trim()) Stage.textContent = "Loading the store now...";
     ApplyBuildVersion();
   };
 
-  ShowBootLoading();
-
-  const BuildObserver = new MutationObserver(() => {
-    ApplyBuildVersion();
-    ShowBootLoading();
-  });
-  BuildObserver.observe(document.body, { childList: true, subtree: true });
+  ApplyBuildVersion();
+  KeepBootVisible();
 
   addEventListener("store-gameplay-started", () => {
     GameplayStarted = true;
-    BuildObserver.disconnect();
   }, { once: true });
 
   Object.defineProperty(window, "__STORE_VERSION__", {
@@ -143,38 +137,32 @@
   });
 
   if (HasSavedSession) {
-    let AccountWatchDone = false;
+    const AccountPoll = setInterval(() => {
+      if (GameplayStarted || window.__STORE_GAMEPLAY_STARTED__) {
+        clearInterval(AccountPoll);
+        return;
+      }
 
-    const UpdateRestoreOverlay = () => {
-      if (AccountWatchDone || GameplayStarted) return;
       const Overlay = document.getElementById("StoreAccountOverlay");
       if (!Overlay) return;
+
       const State = MultiplayerValue?.GetState?.();
+      const BootCritical = window.__STORE_BOOT_CRITICAL__ !== false;
 
       if (State?.account) {
-        Overlay.hidden = true;
-        AccountWatchDone = true;
+        if (!Overlay.hidden) Overlay.hidden = true;
+        if (!BootCritical) clearInterval(AccountPoll);
         return;
       }
 
-      if (window.__STORE_BOOT_CRITICAL__ !== false) {
-        Overlay.hidden = true;
+      if (BootCritical) {
+        if (!Overlay.hidden) Overlay.hidden = true;
         return;
       }
 
-      Overlay.hidden = false;
-      AccountWatchDone = true;
-    };
-
-    const AccountObserver = new MutationObserver(UpdateRestoreOverlay);
-    AccountObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
-    const RestoreInterval = setInterval(() => {
-      UpdateRestoreOverlay();
-      if (AccountWatchDone || GameplayStarted) {
-        clearInterval(RestoreInterval);
-        AccountObserver.disconnect();
-      }
-    }, 60);
+      if (Overlay.hidden) Overlay.hidden = false;
+      clearInterval(AccountPoll);
+    }, 100);
   }
 
   try {
