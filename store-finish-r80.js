@@ -5,7 +5,6 @@ if (!Game?.ActiveChunks || !Game?.PreparedChunks || !Game?.CollisionBoxes) {
 }
 
 const PartitionWork = new WeakSet();
-const NoRearWallMarkerFlag = "NoRearWallR105";
 
 function RemoveLegacyDisplayFrames(Chunk) {
   const Remove = [];
@@ -26,9 +25,8 @@ function RemoveRearClosure(Chunk) {
   const Remove = [];
   Chunk.Group.traverse?.(Object => {
     const Name = String(Object?.name || "");
-    const IsNoRearWallMarker = Object?.userData?.[NoRearWallMarkerFlag] === true;
     if (
-      (Name === "RearStoreClosureR80" && !IsNoRearWallMarker) ||
+      Name === "RearStoreClosureR80" ||
       Name === "RearStoreWallR80" ||
       Name === "RearStoreBaseboardR80" ||
       Object?.userData?.RearStoreWallR80 === true
@@ -41,33 +39,22 @@ function RemoveRearClosure(Chunk) {
     (Chunk.CollisionEntries || []).filter(Entry => Entry?.Type === "RearStoreWallR80")
   );
 
-  Chunk.CollisionEntries = (Chunk.CollisionEntries || []).filter(Entry => Entry?.Type !== "RearStoreWallR80");
+  Chunk.CollisionEntries = (Chunk.CollisionEntries || []).filter(
+    Entry => Entry?.Type !== "RearStoreWallR80"
+  );
 
   for (let Index = Game.CollisionBoxes.length - 1; Index >= 0; Index -= 1) {
     const Entry = Game.CollisionBoxes[Index];
-    if (RemovedEntries.has(Entry) || Entry?.Type === "RearStoreWallR80") Game.CollisionBoxes.splice(Index, 1);
+    if (RemovedEntries.has(Entry) || Entry?.Type === "RearStoreWallR80") {
+      Game.CollisionBoxes.splice(Index, 1);
+    }
   }
 
   if (Array.isArray(Chunk.StructureBounds)) {
-    Chunk.StructureBounds = Chunk.StructureBounds.filter(Box => Box?.userData?.RearStoreWallR80 !== true);
+    Chunk.StructureBounds = Chunk.StructureBounds.filter(
+      Box => Box?.userData?.RearStoreWallR80 !== true
+    );
   }
-}
-
-function EnsureNoRearWallMarker(Chunk) {
-  if (!Chunk?.Group) return false;
-
-  let Marker = Chunk.Group.getObjectByName("RearStoreClosureR80");
-  if (Marker?.userData?.[NoRearWallMarkerFlag] === true) return true;
-
-  if (Marker) Marker.parent?.remove(Marker);
-
-  Marker = new THREE.Group();
-  Marker.name = "RearStoreClosureR80";
-  Marker.userData.ChunkId = Chunk.Id;
-  Marker.userData[NoRearWallMarkerFlag] = true;
-  Marker.userData.VisibleRearWall = false;
-  Chunk.Group.add(Marker);
-  return true;
 }
 
 function BrightPartitionMaterial(Material, Color) {
@@ -111,10 +98,7 @@ async function FinishPartitions(Chunk) {
 async function EnsureRearClosure() {
   for (const Chunk of Game.ActiveChunks.values()) RemoveRearClosure(Chunk);
   for (const Chunk of Game.PreparedChunks.values()) RemoveRearClosure(Chunk);
-
-  const FirstChunk = Game.ActiveChunks.get(0) || [...Game.PreparedChunks.values()].find(Chunk => Chunk?.Index === 0);
-  if (!FirstChunk?.Ready || !FirstChunk.Group) return false;
-  return EnsureNoRearWallMarker(FirstChunk);
+  return true;
 }
 
 async function ProcessChunk(Chunk) {
@@ -133,4 +117,4 @@ async function ProcessAll() {
 ProcessAll().catch(Error => console.warn("Initial store finish failed", Error));
 
 window.__STORE_FINISH_R80__ = { ProcessAll, ProcessChunk, EnsureRearClosure, RemoveRearClosure };
-window.__STORE_FINISH_BUILD__ = "V0.35.58-NO-REAR-WALL-BOOT-COMPAT";
+window.__STORE_FINISH_BUILD__ = "V0.35.58-NO-REAR-WALL";
