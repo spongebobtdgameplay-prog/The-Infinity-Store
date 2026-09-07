@@ -802,7 +802,9 @@ function ClearRoomState() {
 
 async function RefreshAccount() {
   if (!SessionToken) return { ok: false, error: "AUTH_REQUIRED" };
+  const RequestedToken = SessionToken;
   const Result = await Api("/api/auth/me", { timeout: SERVER_WAKE_TIMEOUT_MS });
+  if (SessionToken !== RequestedToken) return { ok: false, error: "SESSION_CHANGED" };
   if (!Result?.ok) {
     if (Result?.error === "AUTH_REQUIRED") {
       StoreSession("");
@@ -911,6 +913,8 @@ async function RestoreSession() {
 
 async function Logout(ShowAccount = true) {
   const LoggedOutUsername = Account?.username || "";
+  clearTimeout(SessionRetryTimer);
+  RestoreNotice.hidden = true;
   if (Socket?.connected && CurrentRoom) {
     await SocketAck("room:leave", {}).catch(() => {});
   }
@@ -984,13 +988,8 @@ function BindSocketEvents(Target) {
     }
     if (/AUTH_REQUIRED/i.test(Message)) {
       Target.disconnect();
-      StoreSession("");
-      Account = null;
-      Profile = null;
-      ClearRoomState();
-      SetStatus("offline");
-      ShowAccountScreen("Your session expired. Sign in again.");
-      Dispatch("store-account-change", GetState());
+      // Confirm rejection against the current token before clearing credentials.
+      InitializeAccountGate().catch(() => {});
       return;
     }
     SetStatus("reconnecting");
@@ -1916,26 +1915,56 @@ async function WaitForAccount() {
   return AccountGate;
 }
 
+let SessionRestoreFlight = null;
+let SessionRetryTimer = null;
+const RestoreNotice = document.createElement("div");
+RestoreNotice.className = "StoreNetworkOverlay";
+RestoreNotice.hidden = true;
+RestoreNotice.innerHTML = '<div class="StoreNetworkCard"><h2>Restoring your session</h2><p>Reconnecting to the store. You are still remembered; no password needed.</p></div>';
+document.body.appendChild(RestoreNotice);
+
 async function InitializeAccountGate() {
-  const HasRememberedAccounts = ReadSavedAccounts().length > 0;
-  ShowAccountScreen(
-    HasRememberedAccounts ? "Choose an account to continue." : "Create an account to continue.",
-    "",
-    HasRememberedAccounts ? "login" : "create"
-  );
+  if (SessionRestoreFlight) return SessionRestoreFlight;
   if (!SessionToken) {
-    CheckCompatibility().catch(() => {});
+    RestoreNotice.hidden = true;
+    const Remembered = ReadSavedAccounts().length > 0;
+    ShowAccountScreen(Remembered ? "Choose an account to continue." : "Create an account to continue.", "", Remembered ? "login" : "create");
     return;
   }
-  const Result = await RestoreSession();
-  if (Result?.ok) return;
-  if (Result?.error === "SESSION_OUTDATED") return;
-  if (Result?.error === "AUTH_REQUIRED") {
-    ShowAccountScreen("Your previous session expired. Sign in again.", "", "login");
-    return;
-  }
-  ShowAccountScreen(ErrorText(Result?.error));
+  clearTimeout(SessionRetryTimer);
+  HideAccountScreen();
+  RestoreNotice.hidden = AccountGateResolved;
+  SessionRestoreFlight = (async () => {
+    const Result = await RestoreSession();
+    if (Result?.ok || Result?.error === "SESSION_CHANGED") {
+      RestoreNotice.hidden = true;
+      return;
+    }
+    if (Result?.error === "SESSION_OUTDATED") {
+      RestoreNotice.hidden = true;
+      return;
+    }
+    if (Result?.error === "AUTH_REQUIRED") {
+      RestoreNotice.hidden = true;
+      ShowAccountScreen("This saved session is no longer valid. Sign in to reconnect.", "", "login");
+      return;
+    }
+    SetStatus("reconnecting");
+    SessionRetryTimer = setTimeout(InitializeAccountGate, 5000);
+  })().catch(() => {
+    SetStatus("reconnecting");
+    if (SessionToken) SessionRetryTimer = setTimeout(InitializeAccountGate, 5000);
+  }).finally(() => { SessionRestoreFlight = null; });
+  return SessionRestoreFlight;
 }
+
+addEventListener("online", () => { if (SessionToken) InitializeAccountGate(); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && SessionToken) InitializeAccountGate();
+});
+setInterval(() => {
+  if (!document.hidden && SessionToken && Account) InitializeAccountGate();
+}, 5 * 60 * 1000);
 
 AccountLoginSwitch.addEventListener("click", () => ShowManualAccount("login"));
 document.getElementById("StoreAccountOther").addEventListener("click", () => ShowManualAccount("login"));

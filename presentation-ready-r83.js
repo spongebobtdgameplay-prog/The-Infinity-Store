@@ -389,9 +389,13 @@ function SchedulePolish(Chunk) {
 async function FinalizeChunkNow(Chunk) {
   if (!Chunk?.Ready || Chunk.Cancelled || !Chunk.Group) return false;
 
-  if (Chunk.Group.userData?.TraversalReadyR83) {
-    SchedulePolish(Chunk);
-    return true;
+  if (Chunk.Group.userData?.TraversalReadyR83 && FullLayoutOccupancyReady(Chunk)) {
+    const Polished = await RunPolishPasses(Chunk);
+    if (Polished) {
+      delete Chunk.Group.userData.GpuWarmReadyR92;
+      await Game.WarmChunkGpu?.(Chunk);
+    }
+    return Polished;
   }
 
   Finalizing.add(Chunk);
@@ -418,8 +422,12 @@ async function FinalizeChunkNow(Chunk) {
     Chunk.Group.userData.TraversalReadyAt = performance.now();
     delete Chunk.Group.userData.TraversalRetryAfter;
 
-    SchedulePolish(Chunk);
-    return true;
+    const Polished = await RunPolishPasses(Chunk);
+    if (Polished) {
+      delete Chunk.Group.userData.GpuWarmReadyR92;
+      await Game.WarmChunkGpu?.(Chunk);
+    }
+    return Polished;
   } finally {
     Finalizing.delete(Chunk);
   }
@@ -464,8 +472,7 @@ export function FinalizeChunk(Chunk) {
     return Promise.resolve(false);
   }
 
-  if (Chunk.Group.userData?.TraversalReadyR83) {
-    SchedulePolish(Chunk);
+  if (Chunk.Group.userData?.PresentationReadyR83 && !Chunk.Group.userData?.PresentationDegradedR83) {
     return Promise.resolve(true);
   }
 

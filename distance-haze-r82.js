@@ -32,8 +32,28 @@ function StabilizeHorizon() {
   });
 }
 
+function LoadedDistance() {
+  const Index = Math.max(0, Game.ChunkIndexForZ(Game.Camera.position.z));
+  const Ready = I => {
+    const Chunk = Game.ActiveChunks.get(I);
+    return Chunk?.Active && !Chunk.Cancelled && Chunk.Group?.parent === Game.Scene &&
+      Chunk.Group.visible !== false && Chunk.Group.userData?.PresentationReadyR83;
+  };
+  if (!Ready(Index)) return 2;
+  let First = Index, Last = Index;
+  while (Ready(First - 1)) First -= 1;
+  while (Ready(Last + 1)) Last += 1;
+  const Forward = Game.Camera.position.z - Game.ActiveChunks.get(Last).BottomZ;
+  // Aisle zero has a solid rear wall; no rear streaming boundary exists there.
+  const Backward = First === 0 ? Infinity : Game.ActiveChunks.get(First).TopZ - Game.Camera.position.z;
+  return Math.max(2, Math.min(Forward, Backward) - 3);
+}
+
 function Apply() {
   const Current = Profile();
+  Current.Far = Math.min(Current.Far, LoadedDistance());
+  Current.Near = Math.min(Current.Near, Current.Far * 0.45);
+  Current.CameraFar = Current.Far + 8;
   if (!Game.Scene.fog?.isFog || Game.Scene.fog?.isFogExp2) {
     Game.Scene.fog = new THREE.Fog(FogColor, Current.Near, Current.Far);
   } else {
