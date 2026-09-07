@@ -1,5 +1,5 @@
-const Cache = "20260906-v03556-visible-frontier1";
-const Version = "0.35.56";
+const Cache = "20260907-v03557-streaming1";
+const Version = "0.35.57";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },

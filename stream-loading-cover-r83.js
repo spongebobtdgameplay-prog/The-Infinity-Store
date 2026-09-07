@@ -72,7 +72,7 @@ const PRIORITY_DISTANCE = 72;
 const NOTICE_DISTANCE = 1.35;
 const NOTICE_MAX_MS = 1600;
 const STRICT_AHEAD = 3;
-const STRICT_BEHIND = 1;
+const STRICT_BEHIND = 2;
 const HORIZON_PROXY_LENGTH = 180;
 const HORIZON_PROXY_WIDTH = 34;
 const HORIZON_PROXY_HEIGHT = 3.72;
@@ -265,7 +265,6 @@ function IsTraversalReady(Chunk) {
     Chunk?.Ready &&
     !Chunk.Cancelled &&
     (
-      Chunk.Group?.userData?.TraversalReadyR83 ||
       Chunk.Group?.userData?.PresentationReadyR83
     )
   );
@@ -360,6 +359,7 @@ function Tick() {
   const CurrentIndex = Math.max(0, Game.ChunkIndexForZ(Game.Camera.position.z));
   const Current = Game.ActiveChunks.get(CurrentIndex);
   UpdateHorizonProxy();
+  window.__STORE_DISTANCE_HAZE_R82__?.Apply?.();
 
   if (!Current) {
     Hide();

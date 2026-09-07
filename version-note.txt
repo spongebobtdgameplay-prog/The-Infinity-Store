@@ -1,1 +1,1 @@
-Semantic versioning begins at V0.12.0. Internal legacy filenames may retain old suffixes until they are naturally replaced.
+0.35.57: Finished-aisle visibility boundary, renewable remembered sessions, adaptive FPS resolution and expanded department displays.

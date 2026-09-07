@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
-import { CreateChunkLayout } from "./store-layout.js?v=20260901-v03552-stableview1";
+import { CreateChunkLayout } from "./store-layout.js?v=20260907-v03557-streaming1";
 
 const Canvas = document.getElementById("GameCanvas");
 const StartButton = document.getElementById("StartButton");
@@ -57,8 +57,8 @@ const STORE_HALF_WIDTH = 17;
 const CEILING_HEIGHT = 3.72;
 const CHUNK_LENGTH = 30;
 const FIRST_CHUNK_TOP_Z = 10;
-const CHUNKS_AHEAD = 1;
-const CHUNKS_BEHIND = 1;
+const CHUNKS_AHEAD = 2;
+const CHUNKS_BEHIND = 2;
 const PREFETCH_CHUNKS = 1;
 const STREAM_PROMOTION_DISTANCE = 12;
 const STREAM_KEEP_BEHIND = 2;
@@ -778,7 +778,7 @@ function BatchMaterialSignature(Material) {
 }
 
 function CanBatchStaticMesh(Mesh) {
-  if (!Mesh?.isMesh || Mesh.isSkinnedMesh || !Mesh.geometry || !Mesh.material) return false;
+  if (!Mesh?.isMesh || Mesh.isInstancedMesh || Mesh.isSkinnedMesh || !Mesh.geometry || !Mesh.material) return false;
   if (Array.isArray(Mesh.material)) return false;
   if (Mesh.morphTargetInfluences?.length) return false;
   if (Mesh.material.transparent && Number(Mesh.material.opacity ?? 1) < 0.995) return false;
@@ -1479,7 +1479,7 @@ function ActivateChunk(Chunk) {
     Chunk.Group?.userData?.PresentationReadyR83
   );
 
-  if (TraversalGateEnabled && !TraversalReady) return false;
+  if (TraversalGateEnabled && (!TraversalReady || !Chunk.Group?.userData?.PresentationReadyR83)) return false;
 
   const GpuWarmRequired =
     TraversalGateEnabled &&

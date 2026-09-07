@@ -20,7 +20,7 @@ const MAX_PLAYERS = 6;
 const DEFAULT_MAX_PLAYERS = 4;
 const STORE_START_SECONDS = 23 * 60 * 60 + 57 * 60;
 const STORE_TIME_RATE = 14;
-const SESSION_DAYS = 30;
+const SESSION_DAYS = 365;
 const MOVEMENT_MIN_INTERVAL_MS = 35;
 const MOVEMENT_MAX_SPEED = 8.25;
 const MOVEMENT_BASE_ALLOWANCE = 0.42;
@@ -203,7 +203,9 @@ async function AccountFromToken(Token, Touch = true) {
   const Row = Result.rows[0];
   if (!Row) return null;
   if (Touch && (!Row.last_seen_at || Date.now() - new Date(Row.last_seen_at).getTime() > 5 * 60 * 1000)) {
-    Database.query("UPDATE sessions SET last_seen_at = NOW() WHERE id = $1", [Row.session_id]).catch(() => {});
+    const ExpiresAt = new Date(Date.now() + SESSION_DAYS * 86400000);
+    await Database.query("UPDATE sessions SET last_seen_at = NOW(), expires_at = $2 WHERE id = $1", [Row.session_id, ExpiresAt]);
+    Row.expires_at = ExpiresAt;
   }
   return {
     id: Row.id,

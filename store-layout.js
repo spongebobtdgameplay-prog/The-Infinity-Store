@@ -570,6 +570,33 @@ function AddAccentFurnitureScatter(Layout, Theme, Index, Seed) {
   }
 }
 
+function AddDepartmentEndcaps(Layout, Theme, Index) {
+  const Models = {
+    "LIVING ROOM": ["Couch_Large1", "Table_RoundLarge", "Chair_2", "Bookshelf"],
+    BEDROOMS: ["Bed_Single", "NightStand_2", "Bookshelf", "Light_Floor1"],
+    KITCHENS: ["Kitchen_Cabinet1", "Kitchen_Fridge", "Kitchen_Oven", "Kitchen_Sink"],
+    BATHROOMS: ["Bathroom_Bathtub", "Bathroom_Toilet", "Kitchen_Cabinet1", "Bathroom_Toilet"],
+    WAREHOUSE: ["Shelf_Large", "Bookshelf", "Shelf_Large", "Bookshelf"],
+    STORAGE: ["Shelf_Large", "Bookshelf", "Shelf_Large", "Bookshelf"]
+  }[Theme] || ["Couch_Large1", "Table_RoundLarge", "Chair_2", "Bookshelf"];
+  const Occupied = [...Layout.Base, ...Layout.Retail, ...Layout.Sale, ...Layout.Zones,
+    ...Layout.Partitions, ...(Layout.Task ? [Layout.Task] : [])].map(BoundsFor);
+  let Added = 0;
+  for (const Z of [-11.8, 11.8, -8.8, 2.8]) {
+    for (const X of [-11.8, -7.5, 7.5, 11.8]) {
+      if (Added >= 8 || (Index === 0 && Z > 5.2)) continue;
+      const Model = Models[Added % Models.length];
+      const Entry = Slot(`Endcap.${Added}`, Model, X, Z, X < 0 ? 0 : Math.PI,
+        { StockStyle: /Shelf|Bookshelf/.test(Model) ? "Books" : "" });
+      const Bounds = BoundsFor(Entry);
+      if (!ValidDisplayBounds(Bounds) || Occupied.some(B => Overlap(B, Bounds, 0.65))) continue;
+      Layout.Base.push(Entry);
+      Occupied.push(Bounds);
+      Added += 1;
+    }
+  }
+}
+
 function AddRetailZone(Layout, Index, Seed) {
   if (Index !== 0) return;
   const Side = SeedRoll(Seed, "EntranceRetailZoneSide") < 0.5 ? -1 : 1;
@@ -762,6 +789,7 @@ export function CreateChunkLayout({ Index, Seed, Theme, CenterZ }) {
   AddAccentFurnitureScatter(Layout, ThemeName, Index, Seed);
   AddRetailZone(Layout, Index, Seed);
   AddTask(Layout, Index, Seed);
+  AddDepartmentEndcaps(Layout, ThemeName, Index);
 
   return FinalizeLayout(Layout, Seed, CenterZ);
 }

@@ -50,7 +50,9 @@ const PerfState = {
   Height: 0,
   Ratio: -1,
   Quality: "",
-  TextureStamp: ""
+  TextureStamp: "",
+  ResolutionScale: 1,
+  LastAdaptation: 0
 };
 
 function ApplyCamera() {
@@ -77,7 +79,7 @@ function ApplyRenderer() {
   const CurrentGame = Game();
   if (!CurrentGame?.Renderer) return;
   const Profile = QualityProfile();
-  const Ratio = Math.min(devicePixelRatio || 1, Profile.PixelRatio);
+  const Ratio = Math.min(devicePixelRatio || 1, Profile.PixelRatio) * PerfState.ResolutionScale;
   if (
     PerfState.Width === innerWidth &&
     PerfState.Height === innerHeight &&
@@ -388,7 +390,10 @@ const FpsCounter = document.createElement("div");
 FpsCounter.id = "FpsCounterR43";
 FpsCounter.innerHTML = `FPS <strong>--</strong><span>-- ms</span>`;
 document.body.appendChild(FpsCounter);
+FpsCounter.style.flexWrap = "wrap";
+FpsCounter.style.maxWidth = "290px";
 const Samples = [];
+document.addEventListener("visibilitychange", () => { Samples.length = 0; LastFrame = performance.now(); PerfState.LastAdaptation = LastFrame; });
 let LastFrame = performance.now();
 let LastFpsPaint = 0;
 
@@ -403,7 +408,18 @@ function FpsFrame(Now) {
     for (const Sample of Samples) Sum += Sample;
     const Average = Sum / Samples.length;
     const Fps = 1000 / Average;
-    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span>`;
+    if (!document.hidden && window.__STORE_GAMEPLAY_STARTED__ === true &&
+        !window.__STORE_BOOT_CRITICAL__ && Now - PerfState.LastAdaptation > 4000 && Samples.length >= 60) {
+      const Previous = PerfState.ResolutionScale;
+      if (Average > 22) PerfState.ResolutionScale = Math.max(0.65, Previous - 0.08);
+      else if (Average < 17) PerfState.ResolutionScale = Math.min(1, Previous + 0.04);
+      PerfState.LastAdaptation = Now;
+      if (Previous !== PerfState.ResolutionScale) ApplyRenderer();
+    }
+    const Sorted = [...Samples].sort((A, B) => A - B);
+    const P95 = Sorted[Math.floor((Sorted.length - 1) * 0.95)];
+    const Calls = Game()?.Renderer?.info?.render?.calls ?? 0;
+    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span><small style="display:block;flex-basis:100%;font-size:10px;margin-top:5px">95% frame ${P95.toFixed(1)} ms · ${Math.round(PerfState.ResolutionScale * 100)}% scale · ${Calls} draws</small>`;
   }
   FpsCounter.classList.toggle("R43Hidden", !Settings.ShowFps);
   requestAnimationFrame(FpsFrame);
