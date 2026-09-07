@@ -1,3 +1,4 @@
+import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
 
 const Game = window.__STORE_GAME__;
@@ -514,19 +515,7 @@ function ChunkSignature(Chunk) {
 }
 
 function CollisionBudgetYield() {
-  return new Promise(Resolve => {
-    if ("requestIdleCallback" in window) {
-      requestIdleCallback(Deadline => {
-        if (Deadline.timeRemaining() >= 4) {
-          Resolve();
-          return;
-        }
-        requestAnimationFrame(() => CollisionBudgetYield().then(Resolve));
-      });
-    } else {
-      requestAnimationFrame(() => Resolve());
-    }
-  });
+  return WaitForWorkSlice();
 }
 
 export async function ProcessChunkAsync(Chunk, Force = false) {

@@ -1,3 +1,4 @@
+import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
@@ -137,19 +138,7 @@ async function PlacePlannedSaleAsset(Chunk, Entry, Index) {
 }
 
 function PlacementYield() {
-  return new Promise(Resolve => {
-    if ("requestIdleCallback" in window) {
-      requestIdleCallback(Deadline => {
-        if (Deadline.timeRemaining() >= 4) {
-          Resolve();
-          return;
-        }
-        requestAnimationFrame(() => PlacementYield().then(Resolve));
-      });
-    } else {
-      requestAnimationFrame(() => Resolve());
-    }
-  });
+  return WaitForWorkSlice();
 }
 
 async function EnsureSaleItems(Chunk) {

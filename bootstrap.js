@@ -1,5 +1,5 @@
-const Cache = "20260907-v03557-streaming1";
-const Version = "0.35.57";
+const Cache = "20260907-v03558-real-aisles1";
+const Version = "0.35.58";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -223,7 +223,7 @@ async function EnsureCurrentWorldReady() {
   const Generation = Number(window.__STORE_WORLD_GENERATION__) || 0;
   LockStart("Finishing the current world before entry.");
 
-  const BootBufferCount = 4;
+  const BootBufferCount = Game.StreamRange.BootCount;
   const BootChunks = await Game.PrepareBootBuffer(BootBufferCount);
 
   for (let Index = 0; Index < BootChunks.length; Index += 1) {
@@ -265,6 +265,10 @@ async function EnsureCurrentWorldReady() {
     throw new Error("World changed before the start gate could unlock.");
   }
 
+  // Attach the completed view range before entry, not one frame after it.
+  for (const Chunk of BootChunks) {
+    if (!Game.TryActivateIndex(Chunk.Index)) throw new Error(`Aisle ${Chunk.Index + 1} could not activate.`);
+  }
   MarkWorldReady(Generation);
   return true;
 }
@@ -373,7 +377,7 @@ try {
   await OptionalImport("./core-fix-authority-r86.js", "Exact furniture collision, ghost cleanup and walkable carpets");
   await OptionalImport("./distance-haze-r82.js", "Stable distance haze");
   await OptionalImport("./presentation-ready-r83.js", "Stable off-screen chunk presentation gate");
-  await OptionalImport("./stream-loading-cover-r83.js", "Opaque streamed-aisle loading cover");
+  await OptionalImport("./stream-loading-cover-r83.js", "Finished-aisle prefetch buffer");
 
   await EnsureCurrentWorldReady();
 

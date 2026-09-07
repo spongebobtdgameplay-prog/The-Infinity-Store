@@ -1,3 +1,4 @@
+import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
 import {
   CreateOnlineSurfaceDecoration,
@@ -65,20 +66,8 @@ function PlansFor(Chunk, Target) {
   ];
 }
 
-async function Yield() {
-  await new Promise(Resolve => {
-    if ("requestIdleCallback" in window) {
-      requestIdleCallback(Deadline => {
-        if (Deadline.timeRemaining() >= 4) {
-          Resolve();
-          return;
-        }
-        requestAnimationFrame(() => Yield().then(Resolve));
-      });
-    } else {
-      requestAnimationFrame(() => Resolve());
-    }
-  });
+function Yield() {
+  return WaitForWorkSlice();
 }
 
 function SnapDecorationToShelf(Target, Decoration, Plan) {

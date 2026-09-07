@@ -31,26 +31,6 @@ for (const Theme of themes) test(`${Theme}: dense deterministic layouts preserve
     }
   }
 });
-function fogContext(indices, current = 0, z = 0, pending = []) {
-  const scene = {};
-  const chunks = new Map(indices.map(i => [i, {Active:true, TopZ:10-i*30, BottomZ:10-(i+1)*30,
-    Group:{parent:scene,visible:true,userData:{PresentationReadyR83:!pending.includes(i)}}}]));
-  const ctx = vm.createContext({Game:{Scene:scene,Camera:{position:{z}},ActiveChunks:chunks,ChunkIndexForZ:()=>current}});
-  vm.runInContext(functionSource('distance-haze-r82.js','LoadedDistance'),ctx);
-  return ctx;
-}
-test('fog ends before the first unloaded gap even with a distant ready chunk',()=> {
-  const c=fogContext([0,1,3]); assert.equal(vm.runInContext('LoadedDistance()',c),47);
-});
-test('unfinished visible aisle is excluded from visibility range',()=> {
-  const c=fogContext([0,1,2],0,0,[1]); assert.equal(vm.runInContext('LoadedDistance()',c),17);
-});
-test('walking back cannot expose retired aisles',()=> {
-  const c=fogContext([3,4,5],4,-120); assert.equal(vm.runInContext('LoadedDistance()',c),37);
-});
-test('no ready current chunk fails closed',()=> {
-  const c=fogContext([]); assert.equal(vm.runInContext('LoadedDistance()',c),2);
-});
 function authContext(result, deferred) {
   const ctx=vm.createContext({SessionToken:'old', Account:{id:1}, Profile:{}, SERVER_WAKE_TIMEOUT_MS:45000,
     Api: deferred || (async()=>result), StoreSession:t=>{ctx.SessionToken=t;}, DisconnectSocket:()=>{},
@@ -98,19 +78,50 @@ test('session restoration retries outages without showing login, then recovers',
   result={ok:true};await retry();assert.equal(chooser,0);assert.equal(vm.runInContext('RestoreNotice.hidden',context),true);
 });
 
-test('FPS adaptation reduces GPU resolution with a floor and slow recovery',()=> {
-  let applied=0;
-  const context=vm.createContext({LastFrame:0,LastFpsPaint:0,Samples:Array(89).fill(35),
-    PerfState:{ResolutionScale:1,LastAdaptation:0},document:{hidden:false},
-    window:{__STORE_GAMEPLAY_STARTED__:true},Settings:{ShowFps:true},
-    FpsCounter:{classList:{toggle(){}},innerHTML:''},Game:()=>({Renderer:{info:{render:{calls:120}}}}),
-    ApplyRenderer:()=>{applied++;},requestAnimationFrame(){}});
-  vm.runInContext(functionSource('performance-manager.js','FpsFrame'),context);
-  for(let n=1;n<=10;n++) {context.LastFrame=n*5000-35;vm.runInContext(`FpsFrame(${n*5000})`,context);}
-  assert.equal(context.PerfState.ResolutionScale,0.65);assert.ok(applied>0);
-  assert.match(context.FpsCounter.innerHTML,/95% frame/);
-  context.Samples=Array(89).fill(16);context.LastFrame=55000-16;vm.runInContext('FpsFrame(55000)',context);
-  assert.ok(Math.abs(context.PerfState.ResolutionScale-0.69)<0.001);
-  context.document.hidden=true;context.Samples=Array(89).fill(35);context.LastFrame=60000-35;vm.runInContext('FpsFrame(60000)',context);
-  assert.ok(Math.abs(context.PerfState.ResolutionScale-0.69)<0.001);
+
+const { STREAM_RANGE, ChunkRange } = await import('../stream-range.js');
+test('loaded geometry spans the unchanged 148m view distance in both directions',()=> {
+  for(let index=0;index<100;index++) for(const offset of [0.001,15,29.999]) {
+    const range=ChunkRange(index), z=10-index*30-offset;
+    assert.ok(z-(10-(range.ActiveMax+1)*30)>148);
+    if(range.ActiveMin>0) assert.ok((10-range.ActiveMin*30)-z>148);
+    assert.ok(range.PrepareMax>range.ActiveMax);
+    assert.ok(range.PrepareMin<=range.ActiveMin);
+  }
+  assert.equal(STREAM_RANGE.BootCount,STREAM_RANGE.ActiveRadius+1);
+});
+
+test('maintenance retains every visible aisle and prefetches all intervening indices',()=> {
+ const requested=[],dropped=[];
+ const active=new Map(Array.from({length:13},(_,i)=>[14+i,{Index:14+i}]));
+ const prepared=new Map([11,12,13,27,28,29].map(i=>[i,{Index:i}]));
+ const c=vm.createContext({Camera:{position:{z:-605}},ChunkIndexForZ:()=>20,performance:{now:()=>1000},
+  MarkViewedChunks(){},UpdateObjectStreaming(){},UpdateChunkVisibility(){},LastMaintainedChunkIndex:-1,LastChunkMaintenanceAt:0,LastChunkIndex:0,
+  ChunkRange,STREAM_RANGE,ActiveChunks:active,PreparedChunks:prepared,TryActivateIndex:()=>true,
+  RequestChunk:i=>{requested.push(i);return Promise.resolve();},PREPARED_BACK_CACHE:9,VIEW_KEEP_HOLD_MS:2200,
+  RestoreChunkStreamObjects(){},DeactivateChunk:i=>dropped.push(i),DropPreparedChunk:i=>dropped.push(i),AisleCounter:null});
+ vm.runInContext(functionSource('game.js','EnsureChunksAroundPlayer'),c);
+ vm.runInContext('EnsureChunksAroundPlayer()',c);
+ assert.deepEqual(requested.sort((a,b)=>a-b),[11,12,13,27,28,29]);
+ assert.deepEqual(dropped,[]);
+});
+
+test('generation budget makes progress even when every idle callback reports no spare time',async()=> {
+ let now=0, callbacks=0;
+ const c=vm.createContext({performance:{now:()=>now},window:{requestIdleCallback(){}},document:{visibilityState:'visible'},
+  requestIdleCallback:callback=>{callbacks++;callback({didTimeout:false,timeRemaining:()=>0});},
+  requestAnimationFrame:callback=>{now+=16;callback();},setTimeout:callback=>callback()});
+ vm.runInContext(functionSource('render-work-budget.js','WaitForWorkSlice'),c);
+ await vm.runInContext('WaitForWorkSlice(5,120)',c);
+ assert.ok(now>=120&&now<150);assert.ok(callbacks<12);
+});
+
+test('FPS counter never changes renderer resolution under slow frames',()=> {
+ let applied=0;
+ const c=vm.createContext({LastFrame:0,LastFpsPaint:0,Samples:Array(89).fill(45),document:{hidden:false},
+  Settings:{ShowFps:true},FpsCounter:{classList:{toggle(){}},innerHTML:''},Game:()=>({Renderer:{info:{render:{calls:120}}}}),
+  ApplyRenderer:()=>{applied++;},requestAnimationFrame(){}});
+ vm.runInContext(functionSource('performance-manager.js','FpsFrame'),c);
+ for(let i=1;i<15;i++){c.LastFrame=i*5000-45;vm.runInContext(`FpsFrame(${i*5000})`,c);}
+ assert.equal(applied,0);assert.match(c.FpsCounter.innerHTML,/95% frame/);
 });

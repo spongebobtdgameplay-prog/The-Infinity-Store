@@ -1,1 +1,1 @@
-0.35.57: Finished-aisle visibility boundary, renewable remembered sessions, adaptive FPS resolution and expanded department displays.
+0.35.58: Remove adaptive-resolution blur and boundary haze. Keep the full real-aisle view range loaded with a bidirectional prefetch buffer.

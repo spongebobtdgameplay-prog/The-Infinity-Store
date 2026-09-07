@@ -1,6 +1,8 @@
+import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
+import { STREAM_RANGE, ChunkRange } from "./stream-range.js?v=20260907-v03558";
 import { CreateChunkLayout } from "./store-layout.js?v=20260907-v03557-streaming1";
 
 const Canvas = document.getElementById("GameCanvas");
@@ -57,15 +59,9 @@ const STORE_HALF_WIDTH = 17;
 const CEILING_HEIGHT = 3.72;
 const CHUNK_LENGTH = 30;
 const FIRST_CHUNK_TOP_Z = 10;
-const CHUNKS_AHEAD = 2;
-const CHUNKS_BEHIND = 2;
-const PREFETCH_CHUNKS = 1;
-const STREAM_PROMOTION_DISTANCE = 12;
-const STREAM_KEEP_BEHIND = 2;
 const VIEW_KEEP_DISTANCE = 120;
 const VIEW_KEEP_HOLD_MS = 2200;
-const PREPARED_BACK_CACHE = 2;
-const PREPARED_FORWARD_EXTRA = 1;
+const PREPARED_BACK_CACHE = STREAM_RANGE.PrefetchRadius;
 const OBJECT_STREAM_INTERVAL_MS = 120;
 const OBJECT_STREAM_NEAR_DISTANCE = 34;
 const OBJECT_STREAM_FAR_DISTANCE = 72;
@@ -406,20 +402,7 @@ function PumpGenerationQueue() {
     }
   };
 
-  if ("requestIdleCallback" in window) {
-    requestIdleCallback(Deadline => {
-      // requestIdleCallback can fire with almost no actual budget. Starting a
-      // model clone/showroom build there is what caused visible frame spikes.
-      if (Deadline.timeRemaining() < 5) {
-        GenerationRunning = false;
-        requestAnimationFrame(PumpGenerationQueue);
-        return;
-      }
-      Run();
-    });
-  } else {
-    setTimeout(Run, 12);
-  }
+  WaitForWorkSlice(5).then(Run);
 }
 
 function OverlapsXZ(A, B, Padding = 0) {
@@ -736,19 +719,7 @@ function AddModelCollision(Chunk, Entry, Model) {
 }
 
 function RenderBatchYield() {
-  return new Promise(Resolve => {
-    if ("requestIdleCallback" in window) {
-      requestIdleCallback(Deadline => {
-        if (Deadline.timeRemaining() >= 4) {
-          Resolve();
-          return;
-        }
-        requestAnimationFrame(() => RenderBatchYield().then(Resolve));
-      });
-    } else {
-      requestAnimationFrame(() => Resolve());
-    }
-  });
+  return WaitForWorkSlice();
 }
 
 function BatchMaterialSignature(Material) {
@@ -1837,11 +1808,13 @@ function RestoreChunkStreamObjects(Chunk) {
 function UpdateChunkVisibility() {
   for (const Chunk of ActiveChunks.values()) {
     if (!Chunk?.Group) continue;
-    if (!Chunk.Group.visible) Chunk.Group.visible = true;
+    const InView = ChunkIntersectsView(Chunk);
+    const NearestZ = THREE.MathUtils.clamp(Camera.position.z, Chunk.BottomZ, Chunk.TopZ);
+    const InRange = Math.abs(Camera.position.z - NearestZ) <= (Scene.fog?.far || Camera.far);
+    const Visible = InView && InRange;
+    Chunk.Group.visible = Visible;
     for (const Object of Chunk.ExternalObjects || []) {
-      if (Object && !Object.userData?.StreamAmbientR101 && !Object.visible) {
-        Object.visible = true;
-      }
+      if (Object && !Object.userData?.StreamAmbientR101 && !Object.isLight) Object.visible = Visible;
     }
   }
 }
@@ -1862,9 +1835,7 @@ function EnsureChunksAroundPlayer() {
   LastChunkMaintenanceAt = Now;
   LastChunkIndex = CurrentIndex;
 
-  const MinIndex = Math.max(0, CurrentIndex - CHUNKS_BEHIND);
-  const MaxIndex = CurrentIndex + CHUNKS_AHEAD;
-  const PrefetchMax = MaxIndex + PREFETCH_CHUNKS;
+  const { ActiveMin: MinIndex, ActiveMax: MaxIndex, PrepareMin, PrepareMax: PrefetchMax } = ChunkRange(CurrentIndex);
   const WantedActive = new Set();
 
   for (let Index = MinIndex; Index <= MaxIndex; Index += 1) {
@@ -1876,17 +1847,13 @@ function EnsureChunksAroundPlayer() {
     }
   }
 
-  RequestChunk(PrefetchMax).catch(() => {});
-
-  const DistanceToBottom = Math.max(
-    0,
-    Camera.position.z - ChunkBottomZ(CurrentIndex)
-  );
-  if (
-    DistanceToBottom <= STREAM_PROMOTION_DISTANCE &&
-    TryActivateIndex(PrefetchMax)
-  ) {
-    WantedActive.add(PrefetchMax);
+  // Prepare every index in both directions; requesting only the farthest
+  // index left holes in the buffer and discarded useful returning aisles.
+  for (let Offset = 1; Offset <= STREAM_RANGE.PrefetchRadius; Offset += 1) {
+    for (const Index of [CurrentIndex + Offset, CurrentIndex - Offset]) {
+      if (Index < PrepareMin || Index > PrefetchMax || WantedActive.has(Index)) continue;
+      RequestChunk(Index).catch(() => {});
+    }
   }
 
   for (const Index of [...ActiveChunks.keys()]) {
@@ -1895,7 +1862,7 @@ function EnsureChunksAroundPlayer() {
 
     const KeepPrepared =
       Index >= Math.max(0, CurrentIndex - PREPARED_BACK_CACHE) &&
-      Index <= PrefetchMax + PREPARED_FORWARD_EXTRA;
+      Index <= PrefetchMax;
 
     if (Chunk) RestoreChunkStreamObjects(Chunk);
     DeactivateChunk(Index, KeepPrepared);
@@ -1906,7 +1873,7 @@ function EnsureChunksAroundPlayer() {
     const LastViewedAt = Number(Chunk?.StreamViewedAt) || -Infinity;
     const KeepByRange =
       Index >= Math.max(0, CurrentIndex - PREPARED_BACK_CACHE) &&
-      Index <= PrefetchMax + PREPARED_FORWARD_EXTRA;
+      Index <= PrefetchMax;
     const KeepByRecentView = Now - LastViewedAt <= VIEW_KEEP_HOLD_MS * 2;
     if (!KeepByRange && !KeepByRecentView) DropPreparedChunk(Index);
   }
@@ -1935,8 +1902,8 @@ function ReportWorldBuffer(Ready, Total, Stage, Detail = "") {
   }));
 }
 
-async function PrepareBootBuffer(Count = 4) {
-  const Total = THREE.MathUtils.clamp(Math.trunc(Number(Count) || 4), 1, 6);
+async function PrepareBootBuffer(Count = STREAM_RANGE.BootCount) {
+  const Total = THREE.MathUtils.clamp(Math.trunc(Number(Count) || STREAM_RANGE.BootCount), 1, STREAM_RANGE.BootCount);
   const Chunks = [];
   const Token = ++BackgroundChunkBufferToken;
 
@@ -1975,7 +1942,7 @@ async function PrepareInitialWorld() {
   if (!FirstChunk) throw new Error("The first store aisle could not be prepared.");
   ActivateChunk(FirstChunk);
 
-  ReportWorldBuffer(0, 4, "Aisle 1 geometry ready", "Finishing required nearby aisles before entry");
+  ReportWorldBuffer(0, STREAM_RANGE.BootCount, "Aisle 1 geometry ready", "Finishing required nearby aisles before entry");
 }
 
 function NormalizeWorldSeed(Value) {
@@ -2247,8 +2214,13 @@ function Animate(Now = performance.now()) {
   requestAnimationFrame(Animate);
 
   if (!Started) {
+    // Keep the existing loading backdrop, but don't repeatedly render an
+    // unchanged camera while the GPU is needed for initial world preparation.
+    if (window.__STORE_BOOT_CRITICAL__ && Number.isFinite(LastBootRenderAt)) return;
     if (Now - LastBootRenderAt < BOOT_RENDER_INTERVAL_MS) return;
     LastBootRenderAt = Now;
+    UpdateStreamFrustum();
+    UpdateChunkVisibility();
     Renderer.render(Scene, Camera);
     return;
   }
@@ -2346,6 +2318,7 @@ window.__STORE_GAME__ = {
   ChunkSeed,
   ChunkIndexForZ,
   ChunkLength: CHUNK_LENGTH,
+  StreamRange: STREAM_RANGE,
   PrepareChunk,
   PrepareBootBuffer,
   EnsureBaseLayoutModels,
