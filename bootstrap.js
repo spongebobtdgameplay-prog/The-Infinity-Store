@@ -1,5 +1,5 @@
-const Cache = "20260912-v03560-warp-stream1";
-const Version = "0.35.60";
+const Cache = "20260912-v03561-collision-assets1";
+const Version = "0.35.61";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -363,7 +363,7 @@ try {
   await import(`./world-polish-r72.js?v=${Cache}`);
   await OptionalImport("./generator-integrity-r77.js", "Exact generated-object placement");
   await OptionalImport("./store-visual-stable-r83.js", "Stable 3D showroom dressing");
-  await OptionalImport("./visible-materials-r77.js", "Targeted near-black material correction");
+  await OptionalImport("./visible-materials-r77.js", "Native asset material cleanup");
   await OptionalImport("./render-distance-lighting-r74.js", "Stable long-distance store lighting");
   await OptionalImport("./retail-showroom-r79.js", "Imported retail showroom models and light variation");
   await OptionalImport("./store-finish-r80.js", "Rear closure and merchandising walls");
