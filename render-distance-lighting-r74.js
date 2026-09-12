@@ -4,13 +4,7 @@ const Game = window.__STORE_GAME__;
 if (!Game?.Camera || !Game?.Scene || !Game?.ActiveChunks || !Game?.PreparedChunks || !Game?.Renderer) throw new Error("Game must load before render distance lighting.");
 
 const WarmGlow = 0xffe2ad;
-const DeadGlow = 0x34372f;
 const HousingColor = 0x66706d;
-
-function Brightness(Color) {
-  if (!Color?.isColor) return 1;
-  return Color.r + Color.g + Color.b;
-}
 
 function EnsureOwnedMaterial(Object, Key) {
   if (!Object?.material) return null;
@@ -25,18 +19,18 @@ function EnsureOwnedMaterial(Object, Key) {
   return Object.material;
 }
 
-function ConfigureGlowMaterial(Material, Broken) {
+function ConfigureGlowMaterial(Material) {
   if (!Material) return;
   if (Array.isArray(Material)) {
-    for (const Entry of Material) ConfigureGlowMaterial(Entry, Broken);
+    for (const Entry of Material) ConfigureGlowMaterial(Entry);
     return;
   }
-  Material.color?.setHex(Broken ? DeadGlow : WarmGlow, THREE.SRGBColorSpace);
+  Material.color?.setHex(WarmGlow, THREE.SRGBColorSpace);
   if (Material.emissive?.isColor) {
-    Material.emissive.setHex(Broken ? 0x10120f : 0xffd18a, THREE.SRGBColorSpace);
-    Material.emissiveIntensity = Broken ? 0.02 : Math.max(0.34, Number(Material.emissiveIntensity) || 0);
+    Material.emissive.setHex(0xffd18a, THREE.SRGBColorSpace);
+    Material.emissiveIntensity = Math.max(0.34, Number(Material.emissiveIntensity) || 0);
   }
-  Material.toneMapped = Broken;
+  Material.toneMapped = false;
   Material.transparent = false;
   Material.opacity = 1;
   Material.depthTest = true;
@@ -47,20 +41,13 @@ function ConfigureGlowMaterial(Material, Broken) {
 
 function StabilizeGlow(Object) {
   if (!Object?.isMesh) return;
-  if (Object.userData.StoreFixtureOriginallyBrokenR88 === undefined) {
-    const Materials = Array.isArray(Object.material) ? Object.material : [Object.material];
-    const Color = Materials.find(Material => Material?.color?.isColor)?.color;
-    Object.userData.StoreFixtureOriginallyBrokenR88 = Brightness(Color) < 0.85;
-  }
-
   Object.userData.StreamAmbientR101 = true;
   Object.userData.PermanentLightOffR79 = false;
+  Object.userData.StoreFixtureForcedStableR89 = true;
   Object.frustumCulled = true;
   Object.renderOrder = 0;
   Object.geometry?.computeBoundingSphere?.();
-
-  const Material = EnsureOwnedMaterial(Object, "StoreLightGlowMaterialR88");
-  ConfigureGlowMaterial(Material, Boolean(Object.userData.StoreFixtureOriginallyBrokenR88));
+  ConfigureGlowMaterial(EnsureOwnedMaterial(Object, "StoreLightGlowMaterialR89"));
 }
 
 function StabilizeHousing(Object) {
@@ -69,7 +56,7 @@ function StabilizeHousing(Object) {
   Object.frustumCulled = true;
   Object.geometry?.computeBoundingSphere?.();
 
-  const Material = EnsureOwnedMaterial(Object, "StoreLightHousingMaterialR88");
+  const Material = EnsureOwnedMaterial(Object, "StoreLightHousingMaterialR89");
   const Materials = Array.isArray(Material) ? Material : [Material];
   for (const Entry of Materials) {
     if (!Entry) continue;
@@ -92,7 +79,7 @@ function DisableProxyHorizon() {
   const Horizon = Game.Scene.getObjectByName("StoreHorizonForward");
   if (!Horizon) return;
   Horizon.visible = false;
-  Horizon.userData.StoreHorizonDisabledR88 = true;
+  Horizon.userData.StoreHorizonDisabledR89 = true;
 }
 
 function StabilizeSceneFill() {
@@ -139,4 +126,4 @@ addEventListener("store-settings-change", () => {
 });
 
 window.__STORE_RENDER_DISTANCE_LIGHTING__ = { ProcessAll, ProcessChunk };
-window.__STORE_RENDER_DISTANCE_LIGHTING_BUILD__ = "V0.35.59-R88-LIGHT-STABILITY";
+window.__STORE_RENDER_DISTANCE_LIGHTING_BUILD__ = "V0.35.59-R89-LIGHT-STABILITY";
