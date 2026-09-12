@@ -1,24 +1,28 @@
-// Prefer spare frame time, but never starve world generation on a busy GPU.
-// The elapsed deadline survives low-budget callbacks; re-queueing must not reset it.
-export function WaitForWorkSlice(MinimumMs = 4, MaximumWaitMs = 120) {
+export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
   const StartedAt = performance.now();
   return new Promise(Resolve => {
     const Check = () => {
       if (!("requestIdleCallback" in window)) {
-        setTimeout(Resolve, 0);
+        requestAnimationFrame(() => Resolve());
         return;
       }
+
       requestIdleCallback(Deadline => {
-        if (Deadline.didTimeout || Deadline.timeRemaining() >= MinimumMs ||
-            performance.now() - StartedAt >= MaximumWaitMs) {
+        const Elapsed = performance.now() - StartedAt;
+        if (Deadline.timeRemaining() >= MinimumMs || Elapsed >= MaximumWaitMs) {
           Resolve();
-        } else if (document.visibilityState === "hidden") {
-          setTimeout(Check, 16);
-        } else {
-          requestAnimationFrame(Check);
+          return;
         }
-      }, { timeout: Math.max(1, MaximumWaitMs - (performance.now() - StartedAt)) });
+
+        if (document.visibilityState === "hidden") {
+          setTimeout(Check, 32);
+          return;
+        }
+
+        requestAnimationFrame(Check);
+      }, { timeout: Math.max(32, MaximumWaitMs - (performance.now() - StartedAt)) });
     };
+
     Check();
   });
 }
