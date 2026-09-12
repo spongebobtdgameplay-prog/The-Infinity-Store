@@ -40,9 +40,9 @@ function Game() {
 }
 
 function QualityProfile() {
-  if (Settings.Graphics === "performance") return { PixelRatio: 0.88, PointLights: 2, Anisotropy: 1 };
-  if (Settings.Graphics === "high") return { PixelRatio: 1.10, PointLights: 4, Anisotropy: 4 };
-  return { PixelRatio: 0.96, PointLights: 3, Anisotropy: 2 };
+  if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1 };
+  if (Settings.Graphics === "high") return { PixelRatio: 1.35, PointLights: 4, Anisotropy: 4 };
+  return { PixelRatio: 1.15, PointLights: 3, Anisotropy: 2 };
 }
 
 const PerfState = {
@@ -77,7 +77,8 @@ function ApplyRenderer() {
   const CurrentGame = Game();
   if (!CurrentGame?.Renderer) return;
   const Profile = QualityProfile();
-  const Ratio = Math.min(devicePixelRatio || 1, Profile.PixelRatio);
+  const DeviceRatio = Math.max(1, Number(devicePixelRatio) || 1);
+  const Ratio = Math.min(DeviceRatio, Profile.PixelRatio);
   if (
     PerfState.Width === innerWidth &&
     PerfState.Height === innerHeight &&
@@ -308,7 +309,7 @@ function BuildSettings() {
   }
   Graphics.value = Settings.Graphics;
   Graphics.addEventListener("change", () => { Settings.Graphics = Graphics.value; PerfState.TextureStamp = ""; PerfState.Quality = ""; SaveSettings(); ApplyPerformance(); });
-  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Keeps the same furniture and collision density. Changes renderer and light cost only."));
+  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Keeps native screen resolution and changes light and texture-filtering cost only."));
 
   const AmbientControl = RangeControl(0, 1, 0.01, Settings.AmbientVolume, Value => `${Math.round(Value * 100)}%`, Value => { Settings.AmbientVolume = Value; SaveSettings(); UpdateAmbient(); });
   Body.appendChild(SettingRow("STORE AMBIENT", AmbientControl, "HVAC/electrical room tone."));
@@ -424,5 +425,5 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.39-FIXED-QUALITY";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.39-FIXED-QUALITY";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.61-NATIVE-RESOLUTION";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.61-NATIVE-RESOLUTION";
