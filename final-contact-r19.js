@@ -9,33 +9,33 @@ if (!Game?.Scene || !Player || !Collision) {
   throw new Error("Game, player, and ray collision utility must load before final contact pass.");
 }
 
-const FINAL_CONTACT_SKIN = 0.029;
-const FINAL_POSE_SKIN = 0.021;
+const FINAL_CONTACT_SKIN = 0.018;
+const FINAL_POSE_SKIN = 0.012;
 
 const ForceCapsules = [
-  { A: "Neck", B: "Head", Radius: 0.155, EndExtension: 0.09 },
-  { A: "Chest", B: "Neck", Radius: 0.190 },
-  { A: "Torso", B: "Chest", Radius: 0.238 },
-  { A: "Abdomen", B: "Torso", Radius: 0.230 },
-  { A: "Hips", B: "Abdomen", Radius: 0.222 },
+  { A: "Neck", B: "Head", Radius: 0.145, EndExtension: 0.07 },
+  { A: "Chest", B: "Neck", Radius: 0.176 },
+  { A: "Torso", B: "Chest", Radius: 0.214 },
+  { A: "Abdomen", B: "Torso", Radius: 0.208 },
+  { A: "Hips", B: "Abdomen", Radius: 0.202 },
 
-  { A: "Chest", B: "Shoulder.L", Radius: 0.190 },
-  { A: "Shoulder.L", B: "UpperArm.L", Radius: 0.145 },
-  { A: "UpperArm.L", B: "LowerArm.L", Radius: 0.138 },
-  { A: "LowerArm.L", B: "Wrist.L", Radius: 0.128, EndExtension: 0.18 },
+  { A: "Chest", B: "Shoulder.L", Radius: 0.168 },
+  { A: "Shoulder.L", B: "UpperArm.L", Radius: 0.118 },
+  { A: "UpperArm.L", B: "LowerArm.L", Radius: 0.112 },
+  { A: "LowerArm.L", B: "Wrist.L", Radius: 0.102, EndExtension: 0.15 },
 
-  { A: "Chest", B: "Shoulder.R", Radius: 0.190 },
-  { A: "Shoulder.R", B: "UpperArm.R", Radius: 0.145 },
-  { A: "UpperArm.R", B: "LowerArm.R", Radius: 0.138 },
-  { A: "LowerArm.R", B: "Wrist.R", Radius: 0.128, EndExtension: 0.18 },
+  { A: "Chest", B: "Shoulder.R", Radius: 0.168 },
+  { A: "Shoulder.R", B: "UpperArm.R", Radius: 0.118 },
+  { A: "UpperArm.R", B: "LowerArm.R", Radius: 0.112 },
+  { A: "LowerArm.R", B: "Wrist.R", Radius: 0.102, EndExtension: 0.15 },
 
-  { A: "Hips", B: "UpperLeg.L", Radius: 0.196 },
-  { A: "UpperLeg.L", B: "LowerLeg.L", Radius: 0.170 },
-  { A: "LowerLeg.L", B: "Foot.L", Radius: 0.160, EndExtension: 0.29 },
+  { A: "Hips", B: "UpperLeg.L", Radius: 0.168 },
+  { A: "UpperLeg.L", B: "LowerLeg.L", Radius: 0.142 },
+  { A: "LowerLeg.L", B: "Foot.L", Radius: 0.132, EndExtension: 0.23 },
 
-  { A: "Hips", B: "UpperLeg.R", Radius: 0.196 },
-  { A: "UpperLeg.R", B: "LowerLeg.R", Radius: 0.170 },
-  { A: "LowerLeg.R", B: "Foot.R", Radius: 0.160, EndExtension: 0.29 }
+  { A: "Hips", B: "UpperLeg.R", Radius: 0.168 },
+  { A: "UpperLeg.R", B: "LowerLeg.R", Radius: 0.142 },
+  { A: "LowerLeg.R", B: "Foot.R", Radius: 0.132, EndExtension: 0.23 }
 ];
 
 const CoreForceCapsules = ForceCapsules.filter(Capsule => {
@@ -45,28 +45,21 @@ const CoreForceCapsules = ForceCapsules.filter(Capsule => {
     "Chest>Neck",
     "Torso>Chest",
     "Abdomen>Torso",
-    "Hips>Abdomen",
-    "Chest>Shoulder.L",
-    "Chest>Shoulder.R",
-    "Hips>UpperLeg.L",
-    "UpperLeg.L>LowerLeg.L",
-    "Hips>UpperLeg.R",
-    "UpperLeg.R>LowerLeg.R"
+    "Hips>Abdomen"
   ]).has(Key);
 });
 
-
 const PoseSegments = [
-  { Joint: "Shoulder.L", Child: "UpperArm.L", Radius: 0.130 },
-  { Joint: "UpperArm.L", Child: "LowerArm.L", Radius: 0.138 },
-  { Joint: "LowerArm.L", Child: "Wrist.L", Radius: 0.130, EndExtension: 0.18 },
-  { Joint: "Shoulder.R", Child: "UpperArm.R", Radius: 0.130 },
-  { Joint: "UpperArm.R", Child: "LowerArm.R", Radius: 0.138 },
-  { Joint: "LowerArm.R", Child: "Wrist.R", Radius: 0.130, EndExtension: 0.18 },
-  { Joint: "UpperLeg.L", Child: "LowerLeg.L", Radius: 0.168 },
-  { Joint: "LowerLeg.L", Child: "Foot.L", Radius: 0.160, EndExtension: 0.29 },
-  { Joint: "UpperLeg.R", Child: "LowerLeg.R", Radius: 0.168 },
-  { Joint: "LowerLeg.R", Child: "Foot.R", Radius: 0.160, EndExtension: 0.29 }
+  { Joint: "Shoulder.L", Child: "UpperArm.L", Radius: 0.108 },
+  { Joint: "UpperArm.L", Child: "LowerArm.L", Radius: 0.112 },
+  { Joint: "LowerArm.L", Child: "Wrist.L", Radius: 0.104, EndExtension: 0.15 },
+  { Joint: "Shoulder.R", Child: "UpperArm.R", Radius: 0.108 },
+  { Joint: "UpperArm.R", Child: "LowerArm.R", Radius: 0.112 },
+  { Joint: "LowerArm.R", Child: "Wrist.R", Radius: 0.104, EndExtension: 0.15 },
+  { Joint: "UpperLeg.L", Child: "LowerLeg.L", Radius: 0.140 },
+  { Joint: "LowerLeg.L", Child: "Foot.L", Radius: 0.132, EndExtension: 0.23 },
+  { Joint: "UpperLeg.R", Child: "LowerLeg.R", Radius: 0.140 },
+  { Joint: "LowerLeg.R", Child: "Foot.R", Radius: 0.132, EndExtension: 0.23 }
 ];
 
 const Scratch = {
@@ -175,7 +168,7 @@ function ForceWholeRigOut(Pivot, Roots) {
   SavePivotPosition(Pivot);
   let TotalPush = 0;
 
-  for (let Pass = 0; Pass < 2 && TotalPush < 0.18; Pass += 1) {
+  for (let Pass = 0; Pass < 2 && TotalPush < 0.13; Pass += 1) {
     let BestDepth = 0;
     Scratch.BestSeparation.set(0, 0, 0);
     Pivot.updateMatrixWorld(true);
@@ -188,7 +181,7 @@ function ForceWholeRigOut(Pivot, Roots) {
       BoneA.getWorldPosition(Scratch.Start);
       BoneB.getWorldPosition(Scratch.End);
 
-      for (const T of [0.15, 0.5, 0.85]) {
+      for (const T of [0.18, 0.5, 0.82]) {
         Scratch.Sample.lerpVectors(Scratch.Start, Scratch.End, T);
 
         const Probe = Collision.ProbeVisibleGeometrySeparation(
@@ -212,10 +205,10 @@ function ForceWholeRigOut(Pivot, Roots) {
 
     if (BestDepth <= 0.0005 || Scratch.BestSeparation.lengthSq() <= 0.000001) break;
 
-    const Remaining = Math.max(0, 0.18 - TotalPush);
+    const Remaining = Math.max(0, 0.13 - TotalPush);
     const PushLength = Math.min(
       Scratch.BestSeparation.length(),
-      0.060,
+      0.045,
       Remaining
     );
     if (PushLength <= 0.0005) break;
@@ -384,8 +377,6 @@ function HideFirstPersonHead(Pivot) {
     Head.scale.setScalar(0.00001);
   }
 
-  // Keep the neck bone at full scale. Shrinking it created a visible hole
-  // when the first-person camera was forced into a steep corner angle.
   Pivot.traverse(Object => {
     if (!Object?.isMesh || !/head|helmet|hardhat|hair/i.test(String(Object.name || ""))) return;
     Scratch.SavedVisibility.set(Object, Object.visible);
@@ -446,4 +437,4 @@ window.__STORE_FINAL_CONTACT__ = {
   Apply: ResolveAllVisibleContacts
 };
 
-window.__STORE_FINAL_CONTACT_BUILD__ = "V0.35.34-SHOE-BOX-LAST-STAGE";
+window.__STORE_FINAL_CONTACT_BUILD__ = "V0.35.61-INDEPENDENT-LIMBS";
