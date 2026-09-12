@@ -1,9 +1,11 @@
 import * as THREE from "three";
 
-const Build = "V0.35.62-R92-VISIBLE-COLLISION";
+const Build = "V0.35.62-R92-VISIBLE-COLLISION-2";
 const ShapeCache = new WeakMap();
 const PatchedEntries = new WeakSet();
 const PatchedRoots = new WeakSet();
+const PendingEntries = new Set();
+const DetailRoots = new Set();
 const CellSize = 0.52;
 const EyeHeight = 1.68;
 const ScratchA = new THREE.Vector3();
@@ -13,9 +15,15 @@ const ScratchAB = new THREE.Vector3();
 const ScratchAC = new THREE.Vector3();
 const ScratchNormal = new THREE.Vector3();
 const ScratchWorld = new THREE.Vector3();
+const ScratchCenter = new THREE.Vector3();
 const FrustumMatrix = new THREE.Matrix4();
 const Frustum = new THREE.Frustum();
 const ChunkBox = new THREE.Box3();
+const BathroomProfiles = new Map([
+  ["Bathroom_Toilet", { Color: 0xc9c4ba, Roughness: 0.48, Metalness: 0.01 }],
+  ["Bathroom_Bathtub", { Color: 0xc9c4ba, Roughness: 0.50, Metalness: 0.01 }],
+  ["Bathroom_Sink", { Color: 0xc5c1b7, Roughness: 0.46, Metalness: 0.02 }]
+]);
 
 function IsNoCollisionNode(Object) {
   let Current = Object;
@@ -48,20 +56,59 @@ function MarkNoCollision(Object) {
   });
 }
 
-function MarkDecorations(Game) {
-  Game.Scene?.traverse?.(Object => {
-    if (!Object?.isObject3D) return;
-    const Data = Object.userData || {};
-    const Name = String(Object.name || "");
-    if (
-      Data.CompactPriceAuthorityR83 === true ||
-      Data.ShelfStockR83 === true ||
-      Data.WalkableCarpetR87 === true ||
-      Data.DecorationKind === "Rug" ||
-      Data.DecorationKind === "LargeShowroomRug" ||
-      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration/i.test(Name)
-    ) MarkNoCollision(Object);
+function IsDetailRoot(Object) {
+  if (!Object?.isObject3D) return false;
+  const Data = Object.userData || {};
+  const Name = String(Object.name || "");
+  return Boolean(
+    Data.CompactPriceAuthorityR83 === true ||
+    Data.ShelfStockR83 === true ||
+    Data.WalkableCarpetR87 === true ||
+    Data.DecorationKind === "Rug" ||
+    Data.DecorationKind === "LargeShowroomRug" ||
+    /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration/i.test(Name)
+  );
+}
+
+function ScanChunkDetails(Chunk) {
+  if (!Chunk?.Group) return;
+  for (const Object of Chunk.Group.children || []) {
+    if (!IsDetailRoot(Object)) continue;
+    DetailRoots.add(Object);
+    MarkNoCollision(Object);
+  }
+}
+
+function NormalizeAssetRoot(Root) {
+  const Profile = BathroomProfiles.get(String(Root?.name || ""));
+  if (!Profile || Root.userData?.VisibleAssetMaterialR92) return;
+  Root.userData.VisibleAssetMaterialR92 = true;
+  Root.traverse?.(Object => {
+    if (!Object?.isMesh || !Object.material) return;
+    const Source = Array.isArray(Object.material) ? Object.material : [Object.material];
+    const Updated = Source.map(Material => {
+      if (!Material || Material.map) return Material;
+      const Color = Material.color;
+      if (!Color?.isColor) return Material;
+      const Hex = Color.getHex(THREE.SRGBColorSpace);
+      const R = (Hex >> 16) & 255;
+      const G = (Hex >> 8) & 255;
+      const B = Hex & 255;
+      if (Math.min(R, G, B) < 215) return Material;
+      const Clone = Material.clone();
+      Clone.color.setHex(Profile.Color, THREE.SRGBColorSpace);
+      if ("roughness" in Clone) Clone.roughness = Profile.Roughness;
+      if ("metalness" in Clone) Clone.metalness = Profile.Metalness;
+      Clone.needsUpdate = true;
+      return Clone;
+    });
+    Object.material = Array.isArray(Object.material) ? Updated : Updated[0];
   });
+}
+
+function ScanChunkAssets(Chunk) {
+  for (const Model of Chunk?.Models || []) NormalizeAssetRoot(Model);
+  for (const Object of Chunk?.Group?.children || []) NormalizeAssetRoot(Object);
 }
 
 function EntryObject(Entry) {
@@ -263,9 +310,15 @@ function ShapeTouchesPlayer(Position, Radius, Shape) {
 function PatchExactEntry(Entry) {
   if (!Entry?.CoreFixR87 || PatchedEntries.has(Entry)) return;
   const Model = Entry.CollisionObject;
-  if (!Model?.isObject3D || IsNoCollisionNode(Model)) return;
+  if (!Model?.isObject3D || IsNoCollisionNode(Model)) {
+    PatchedEntries.add(Entry);
+    return;
+  }
   const Shape = BuildShape(Model);
-  if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) return;
+  if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) {
+    PatchedEntries.add(Entry);
+    return;
+  }
 
   Entry.Box = Shape.Bounds.clone();
   Entry.OriginalBox = Shape.Bounds.clone();
@@ -276,16 +329,40 @@ function PatchExactEntry(Entry) {
   PatchedEntries.add(Entry);
 }
 
-function PatchCollisionEntries(Game) {
-  const Seen = new Set();
-  const Patch = Entry => {
-    if (!Entry || Seen.has(Entry)) return;
-    Seen.add(Entry);
-    PatchExactEntry(Entry);
+function QueueCollisionEntries(Game) {
+  const Queue = Entry => {
+    if (!Entry?.CoreFixR87 || PatchedEntries.has(Entry)) return;
+    PendingEntries.add(Entry);
   };
-  for (const Entry of Game.CollisionBoxes || []) Patch(Entry);
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Patch(Entry);
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Patch(Entry);
+  for (const Entry of Game.CollisionBoxes || []) Queue(Entry);
+  for (const Chunk of Game.ActiveChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Queue(Entry);
+  for (const Chunk of Game.PreparedChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Queue(Entry);
+}
+
+function PatchNearestEntry(Game) {
+  if (!PendingEntries.size) return;
+  const Camera = Game.Camera;
+  let Best = null;
+  let BestDistance = Infinity;
+  for (const Entry of PendingEntries) {
+    if (!Entry || PatchedEntries.has(Entry)) {
+      PendingEntries.delete(Entry);
+      continue;
+    }
+    const Object = Entry.CollisionObject;
+    if (!Object?.parent) {
+      PendingEntries.delete(Entry);
+      continue;
+    }
+    Object.getWorldPosition(ScratchWorld);
+    const Distance = Math.hypot(Camera.position.x - ScratchWorld.x, Camera.position.z - ScratchWorld.z);
+    if (Distance >= BestDistance) continue;
+    BestDistance = Distance;
+    Best = Entry;
+  }
+  if (!Best) return;
+  PendingEntries.delete(Best);
+  PatchExactEntry(Best);
 }
 
 function DistanceXZ(A, B) {
@@ -308,24 +385,52 @@ function UpdateDetailVisibility(Game) {
       new THREE.Vector3(17.2, 4.2, Number(Chunk.TopZ) + 0.2)
     );
     const CenterZ = (Number(Chunk.BottomZ) + Number(Chunk.TopZ)) * 0.5;
-    ScratchWorld.set(0, Camera.position.y, CenterZ);
-    const Distance = DistanceXZ(Camera.position, ScratchWorld);
+    ScratchCenter.set(0, Camera.position.y, CenterZ);
+    const Distance = DistanceXZ(Camera.position, ScratchCenter);
     const InView = Frustum.intersectsBox(ChunkBox);
     Chunk.Group.visible = Distance <= ChunkHideDistance && (InView || Distance < 38);
   }
 
-  Game.Scene?.traverse?.(Object => {
-    if (!Object?.isObject3D || !Object.parent) return;
+  for (const Object of [...DetailRoots]) {
+    if (!Object?.parent) {
+      DetailRoots.delete(Object);
+      continue;
+    }
     const Data = Object.userData || {};
     const Name = String(Object.name || "");
     const IsPrice = Data.CompactPriceAuthorityR83 === true || /CompactPriceTag|FurniturePriceSign|FurnitureItemSign/i.test(Name);
     const IsStock = Data.ShelfStockR83 === true || /ShelfStock|OnlineSurfaceDecoration/i.test(Name);
-    if (!IsPrice && !IsStock) return;
+    if (!IsPrice && !IsStock) continue;
     Object.getWorldPosition(ScratchWorld);
     const Distance = DistanceXZ(Camera.position, ScratchWorld);
     const Limit = IsPrice ? 24 : 34;
     Object.visible = Distance <= Limit;
-  });
+  }
+}
+
+function ClassifyFurnitureContact() {
+  const Contact = window.__STORE_MOVEMENT_CONTACT__;
+  if (!Contact) return;
+  const Age = performance.now() - Number(Contact.LastHit ?? -Infinity);
+  if (Age < 0 || Age > 150) return;
+  const Type = String(Contact.Type || "");
+  if (!/ExactMeshR87|Furniture|Retail|Couch|Chair|Table|Bed|Shelf|Cabinet|Fridge|Oven|Sink|Toilet|Bathtub/i.test(Type)) return;
+  const Part = String(Contact.BodyPart || "");
+  if (/upper-leg|lower-leg|foot/i.test(Part)) return;
+  Contact.BodyPart = "lower-leg-furniture";
+}
+
+function Maintenance(Game) {
+  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
+    ScanChunkDetails(Chunk);
+    ScanChunkAssets(Chunk);
+  }
+  for (const Chunk of Game.PreparedChunks?.values?.() || []) {
+    ScanChunkDetails(Chunk);
+    ScanChunkAssets(Chunk);
+  }
+  PurgeDecorationEntries(Game);
+  QueueCollisionEntries(Game);
 }
 
 function Install() {
@@ -333,9 +438,8 @@ function Install() {
   const Player = window.__STORE_PLAYER__;
   if (!Game?.Scene || !Game?.Camera || !Game?.CollisionBoxes || !Player) return false;
 
-  MarkDecorations(Game);
-  PurgeDecorationEntries(Game);
-  PatchCollisionEntries(Game);
+  Maintenance(Game);
+  for (let Index = 0; Index < 2; Index += 1) PatchNearestEntry(Game);
   UpdateDetailVisibility(Game);
 
   const BuildNode = document.getElementById("BuildVersion");
@@ -344,9 +448,8 @@ function Install() {
   window.__STORE_VISIBLE_COLLISION_FIX_R92__ = {
     Build,
     Refresh() {
-      MarkDecorations(Game);
-      PurgeDecorationEntries(Game);
-      PatchCollisionEntries(Game);
+      Maintenance(Game);
+      for (let Index = 0; Index < 2; Index += 1) PatchNearestEntry(Game);
       UpdateDetailVisibility(Game);
     }
   };
@@ -355,18 +458,22 @@ function Install() {
 }
 
 let Installed = false;
-let LastDetailUpdate = 0;
+let LastVisibilityUpdate = 0;
+let LastMaintenance = 0;
 
 function Tick(Now) {
   if (!Installed) Installed = Install();
   if (Installed) {
     const Game = window.__STORE_GAME__;
-    if (Game && Now - LastDetailUpdate > 180) {
-      LastDetailUpdate = Now;
-      MarkDecorations(Game);
-      PurgeDecorationEntries(Game);
-      PatchCollisionEntries(Game);
+    ClassifyFurnitureContact();
+    PatchNearestEntry(Game);
+    if (Now - LastVisibilityUpdate > 180) {
+      LastVisibilityUpdate = Now;
       UpdateDetailVisibility(Game);
+    }
+    if (Now - LastMaintenance > 900) {
+      LastMaintenance = Now;
+      Maintenance(Game);
     }
   }
   requestAnimationFrame(Tick);
