@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
 const Game = window.__STORE_GAME__;
-if (!Game?.Scene || !Game?.Camera || !Game?.Renderer) throw new Error("Game must load before distance haze.");
+if (!Game?.Scene || !Game?.Camera || !Game?.Renderer || !Game?.ActiveChunks) throw new Error("Game must load before distance haze.");
 
 const FogColor = 0x24261f;
 
@@ -16,7 +16,25 @@ function DisableProxyHorizon() {
   const Horizon = Game.Scene.getObjectByName("StoreHorizonForward");
   if (!Horizon) return;
   Horizon.visible = false;
-  Horizon.userData.StoreHorizonDisabledR88 = true;
+  Horizon.userData.StoreHorizonDisabledR90 = true;
+}
+
+function KeepActiveChunksRenderable() {
+  for (const Chunk of Game.ActiveChunks.values()) {
+    if (!Chunk?.Group || Chunk.Cancelled || Chunk.Group.parent !== Game.Scene) continue;
+    Chunk.Group.visible = true;
+  }
+}
+
+function InstallVisibilityGuard() {
+  if (Game.Renderer.__StoreChunkVisibilityGuardR90) return;
+  const OriginalRender = Game.Renderer.render.bind(Game.Renderer);
+  Game.Renderer.render = function StableStoreRender(Scene, Camera) {
+    KeepActiveChunksRenderable();
+    DisableProxyHorizon();
+    return OriginalRender(Scene, Camera);
+  };
+  Game.Renderer.__StoreChunkVisibilityGuardR90 = true;
 }
 
 function Apply() {
@@ -36,7 +54,9 @@ function Apply() {
     Game.Camera.updateProjectionMatrix();
   }
 
+  KeepActiveChunksRenderable();
   DisableProxyHorizon();
+  InstallVisibilityGuard();
 }
 
 Apply();
@@ -44,5 +64,5 @@ addEventListener("store-settings-change", Apply);
 const Interval = setInterval(Apply, 1600);
 addEventListener("pagehide", () => clearInterval(Interval), { once: true });
 
-window.__STORE_DISTANCE_HAZE_R82__ = { Apply };
-window.__STORE_DISTANCE_HAZE_BUILD__ = "V0.35.59-R88-FOG-STABILITY";
+window.__STORE_DISTANCE_HAZE_R82__ = { Apply, KeepActiveChunksRenderable };
+window.__STORE_DISTANCE_HAZE_BUILD__ = "V0.35.60-R90-VISIBILITY-GUARD";
