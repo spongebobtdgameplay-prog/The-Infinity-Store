@@ -4,6 +4,19 @@ const Game = window.__STORE_GAME__;
 if (!Game?.Scene || !Game?.ActiveChunks || !Game?.PreparedChunks) throw new Error("Game must load before visible material correction.");
 
 const Processed = new WeakMap();
+const KnownAssetRoots = new Set([
+  "Kitchen_Fridge",
+  "Kitchen_Oven",
+  "Kitchen_Sink",
+  "Bathroom_Sink",
+  "Bathroom_Bathtub",
+  "Bathroom_Toilet",
+  "Light_Floor1",
+  "Door_3",
+  "Shelf_Large",
+  "Bookshelf"
+]);
+
 const ExactReplacements = new Map([
   [0x171a18, 0x687268],
   [0x232722, 0x667266],
@@ -14,41 +27,6 @@ const ExactReplacements = new Map([
   [0x323a3b, 0x667472],
   [0x282d30, 0x68757a]
 ]);
-
-function CreateRetailTexture(Base, LineA, LineB, Vertical = false) {
-  const Canvas = document.createElement("canvas");
-  Canvas.width = 96;
-  Canvas.height = 96;
-  const Context = Canvas.getContext("2d", { alpha: false });
-  Context.fillStyle = Base;
-  Context.fillRect(0, 0, 96, 96);
-  for (let Index = 0; Index < 24; Index += 1) {
-    Context.globalAlpha = 0.08 + (Index % 5) * 0.012;
-    Context.fillStyle = Index % 2 ? LineA : LineB;
-    if (Vertical) Context.fillRect(Index * 4, 0, 1, 96);
-    else Context.fillRect(0, Index * 4, 96, 1);
-  }
-  Context.globalAlpha = 0.08;
-  for (let Index = 0; Index < 80; Index += 1) {
-    const X = (Index * 37) % 96;
-    const Y = (Index * 61) % 96;
-    Context.fillStyle = Index % 2 ? LineA : LineB;
-    Context.fillRect(X, Y, 1, 1);
-  }
-  Context.globalAlpha = 1;
-  const Texture = new THREE.CanvasTexture(Canvas);
-  Texture.wrapS = THREE.RepeatWrapping;
-  Texture.wrapT = THREE.RepeatWrapping;
-  Texture.repeat.set(2, 2);
-  Texture.colorSpace = THREE.SRGBColorSpace;
-  Texture.anisotropy = Math.min(2, Game.Renderer?.capabilities?.getMaxAnisotropy?.() || 1);
-  Texture.needsUpdate = true;
-  return Texture;
-}
-
-const BrushedMetalTexture = CreateRetailTexture("#7f8986", "#b8c0bc", "#59615e");
-const WarmLaminateTexture = CreateRetailTexture("#8c7359", "#c3a17d", "#5f4b3b", true);
-const NeutralFabricTexture = CreateRetailTexture("#777b75", "#a7aba4", "#555a54", true);
 
 function SrgbHex(Material) {
   if (!Material?.color?.isColor) return null;
@@ -69,19 +47,14 @@ function IsTrueNearBlack(Hex) {
   return Math.max(Red, Green, Blue) <= 28;
 }
 
-function IsNeutralGray(Hex) {
-  if (!Number.isInteger(Hex)) return false;
-  const { Red, Green, Blue } = Channels(Hex);
-  const Max = Math.max(Red, Green, Blue);
-  const Min = Math.min(Red, Green, Blue);
-  return Max - Min <= 22;
+function IsGeneratedCanvasTexture(Texture) {
+  return Boolean(Texture?.isCanvasTexture);
 }
 
-function FindModelRoot(Object) {
+function FindNamedRoot(Object) {
   let Current = Object;
   while (Current && Current !== Game.Scene) {
-    const Name = String(Current.name || "");
-    if (Name === "Shelf_Large" || Name === "Window_Large1") return Current;
+    if (KnownAssetRoots.has(String(Current.name || ""))) return Current;
     Current = Current.parent;
   }
   return null;
@@ -102,36 +75,70 @@ function FindImportedRetailRoot(Object) {
   return null;
 }
 
-function CorrectShelfMaterial(Material) {
-  if (!Material) return Material;
-  const Clone = Material.clone();
-  const Hex = SrgbHex(Clone);
-  if (!Clone.map) {
-    Clone.map = BrushedMetalTexture;
-    Clone.color?.setHex(0xffffff, THREE.SRGBColorSpace);
-  } else if (Hex !== null && (IsTrueNearBlack(Hex) || IsNeutralGray(Hex))) {
-    Clone.color?.setHex(0xaeb7b3, THREE.SRGBColorSpace);
+function IsHandleLike(Object, Material) {
+  const Name = `${String(Object?.name || "")} ${String(Material?.name || "")}`;
+  return /handle|hinge|trim|rail|grip/i.test(Name);
+}
+
+function CleanSyntheticMaps(Clone) {
+  for (const Key of ["map", "normalMap", "roughnessMap", "metalnessMap", "emissiveMap", "aoMap"]) {
+    if (IsGeneratedCanvasTexture(Clone?.[Key])) Clone[Key] = null;
   }
-  if ("roughness" in Clone) Clone.roughness = 0.58;
-  if ("metalness" in Clone) Clone.metalness = 0.30;
-  if (Clone.emissive?.isColor) {
-    Clone.emissive.setHex(0x151a18, THREE.SRGBColorSpace);
-    Clone.emissiveIntensity = 0.04;
+}
+
+function AssetProfile(RootName, Object, Material) {
+  if (RootName === "Kitchen_Fridge") {
+    if (IsHandleLike(Object, Material)) return { Color: 0x474d4d, Roughness: 0.40, Metalness: 0.58 };
+    return { Color: 0xe7e3d9, Roughness: 0.50, Metalness: 0.14 };
+  }
+  if (RootName === "Kitchen_Oven") return { Color: 0x555c5d, Roughness: 0.44, Metalness: 0.58 };
+  if (RootName === "Kitchen_Sink" || RootName === "Bathroom_Sink") return { Color: 0xd1d6d3, Roughness: 0.40, Metalness: 0.52 };
+  if (RootName === "Bathroom_Bathtub" || RootName === "Bathroom_Toilet") return { Color: 0xeee9df, Roughness: 0.46, Metalness: 0.02 };
+  if (RootName === "Light_Floor1") return { Color: 0x777e7d, Roughness: 0.52, Metalness: 0.42 };
+  if (RootName === "Door_3") return { Color: 0x8d684f, Roughness: 0.72, Metalness: 0.02 };
+  if (RootName === "Shelf_Large" || RootName === "Bookshelf") return { Color: 0x9da5a1, Roughness: 0.62, Metalness: 0.24 };
+  return null;
+}
+
+function CorrectNamedAssetMaterial(Object, Material, Root) {
+  if (!Material) return Material;
+  const RootName = String(Root?.name || "");
+  const Profile = AssetProfile(RootName, Object, Material);
+  if (!Profile) return Material;
+
+  const HasSyntheticMap = ["map", "normalMap", "roughnessMap", "metalnessMap", "emissiveMap", "aoMap"].some(Key => IsGeneratedCanvasTexture(Material[Key]));
+  const Hex = SrgbHex(Material);
+  const NeedsColorRepair = Hex !== null && IsTrueNearBlack(Hex);
+  if (!HasSyntheticMap && !NeedsColorRepair && RootName !== "Kitchen_Fridge") return Material;
+
+  const Clone = Material.clone();
+  CleanSyntheticMaps(Clone);
+
+  if (!Clone.map || RootName === "Kitchen_Fridge") Clone.color?.setHex(Profile.Color, THREE.SRGBColorSpace);
+  else if (NeedsColorRepair) Clone.color?.setHex(0xb9beb9, THREE.SRGBColorSpace);
+
+  if ("roughness" in Clone) Clone.roughness = Profile.Roughness;
+  if ("metalness" in Clone) Clone.metalness = Profile.Metalness;
+  if (Clone.emissive?.isColor && Clone.emissiveIntensity > 0.01) {
+    Clone.emissive.setHex(0x000000, THREE.SRGBColorSpace);
+    Clone.emissiveIntensity = 0;
   }
   Clone.needsUpdate = true;
   return Clone;
 }
 
-function CorrectWindowMaterial(Material) {
+function CorrectImportedMaterial(Material) {
   if (!Material) return Material;
+  const Hex = SrgbHex(Material);
+  if (Hex === null || !IsTrueNearBlack(Hex)) return Material;
   const Clone = Material.clone();
-  Clone.color?.setHex(0x84949a, THREE.SRGBColorSpace);
-  if ("roughness" in Clone) Clone.roughness = 0.52;
+  Clone.color?.setHex(0x858d89, THREE.SRGBColorSpace);
+  if ("roughness" in Clone) Clone.roughness = Math.max(0.58, Number(Clone.roughness) || 0);
   Clone.needsUpdate = true;
   return Clone;
 }
 
-function CorrectBlackMaterial(Material) {
+function CorrectGenericNearBlack(Material) {
   const Hex = SrgbHex(Material);
   if (Hex === null) return Material;
   const Replacement = ExactReplacements.get(Hex) ?? (IsTrueNearBlack(Hex) ? 0x6c7371 : null);
@@ -142,73 +149,34 @@ function CorrectBlackMaterial(Material) {
   return Clone;
 }
 
-function ImportedProfile(Root) {
-  const Name = String(Root?.name || "");
-  if (/Shelf|Storage|Display/i.test(Name)) {
-    return { Texture: BrushedMetalTexture, Color: 0xffffff, Roughness: 0.58, Metalness: 0.28 };
-  }
-  if (/Cabinet|Table/i.test(Name)) {
-    return { Texture: WarmLaminateTexture, Color: 0xffffff, Roughness: 0.66, Metalness: 0.06 };
-  }
-  if (/Chair|Armchair/i.test(Name)) {
-    return { Texture: NeutralFabricTexture, Color: 0xffffff, Roughness: 0.86, Metalness: 0.01 };
-  }
-  return { Texture: BrushedMetalTexture, Color: 0xffffff, Roughness: 0.68, Metalness: 0.12 };
-}
-
-function CorrectImportedMaterial(Material, Root) {
-  if (!Material) return Material;
-  const Hex = SrgbHex(Material);
-  const NeedsSurface = !Material.map && (Hex === null || IsNeutralGray(Hex) || IsTrueNearBlack(Hex));
-  const NeedsBrightening = Hex !== null && IsTrueNearBlack(Hex);
-  if (!NeedsSurface && !NeedsBrightening) return Material;
-
-  const Profile = ImportedProfile(Root);
-  const Clone = Material.clone();
-  if (NeedsSurface) {
-    Clone.map = Profile.Texture;
-    Clone.color?.setHex(Profile.Color, THREE.SRGBColorSpace);
-  } else if (NeedsBrightening) {
-    Clone.color?.setHex(0x8c9591, THREE.SRGBColorSpace);
-  }
-  if ("roughness" in Clone) Clone.roughness = Math.max(Profile.Roughness, Number(Clone.roughness) || 0);
-  if ("metalness" in Clone) Clone.metalness = Math.min(Profile.Metalness, Number(Clone.metalness) || Profile.Metalness);
-  Clone.needsUpdate = true;
-  return Clone;
-}
-
 function CorrectMaterial(Object, Material) {
-  const Root = FindModelRoot(Object);
-  if (Root?.name === "Shelf_Large") return CorrectShelfMaterial(Material);
-  if (Root?.name === "Window_Large1") return CorrectWindowMaterial(Material);
+  const Root = FindNamedRoot(Object);
+  if (Root) return CorrectNamedAssetMaterial(Object, Material, Root);
+  if (FindImportedRetailRoot(Object)) return CorrectImportedMaterial(Material);
+  return CorrectGenericNearBlack(Material);
+}
 
-  const Imported = FindImportedRetailRoot(Object);
-  if (Imported) return CorrectImportedMaterial(Material, Imported);
-  return CorrectBlackMaterial(Material);
+function MaterialSignature(Material) {
+  if (!Material) return "";
+  return `${Material.uuid || ""}:${SrgbHex(Material) ?? ""}:${Material.map?.uuid || ""}:${Material.normalMap?.uuid || ""}:${Material.roughnessMap?.uuid || ""}:${Material.metalnessMap?.uuid || ""}`;
 }
 
 function ProcessMesh(Object) {
-  if (!Object?.isMesh) return;
+  if (!Object?.isMesh || !Object.material) return;
   const Current = Object.material;
-  if (!Current) return;
-
-  const Root = FindModelRoot(Object);
-  const Imported = FindImportedRetailRoot(Object);
-  const RootName = Root?.name || "";
-  const ImportedName = Imported?.name || "";
   const Signature = Array.isArray(Current)
-    ? `${RootName}:${ImportedName}:` + Current.map(Material => `${Material?.uuid || ""}:${SrgbHex(Material) ?? ""}:${Material?.map?.uuid || ""}`).join(":")
-    : `${RootName}:${ImportedName}:${Current.uuid || ""}:${SrgbHex(Current) ?? ""}:${Current.map?.uuid || ""}`;
+    ? Current.map(MaterialSignature).join("|")
+    : MaterialSignature(Current);
   if (Processed.get(Object) === Signature) return;
 
   if (Array.isArray(Current)) Object.material = Current.map(Material => CorrectMaterial(Object, Material));
   else Object.material = CorrectMaterial(Object, Current);
 
   const Updated = Object.material;
-  const UpdatedSignature = Array.isArray(Updated)
-    ? `${RootName}:${ImportedName}:` + Updated.map(Material => `${Material?.uuid || ""}:${SrgbHex(Material) ?? ""}:${Material?.map?.uuid || ""}`).join(":")
-    : `${RootName}:${ImportedName}:${Updated?.uuid || ""}:${SrgbHex(Updated) ?? ""}:${Updated?.map?.uuid || ""}`;
-  Processed.set(Object, UpdatedSignature);
+  Processed.set(
+    Object,
+    Array.isArray(Updated) ? Updated.map(MaterialSignature).join("|") : MaterialSignature(Updated)
+  );
 }
 
 function ProcessRoot(Root) {
@@ -240,4 +208,4 @@ function ProcessAll() {
 ProcessAll();
 
 window.__STORE_VISIBLE_MATERIALS_R77__ = { ProcessAll, ProcessChunk };
-window.__STORE_VISIBLE_MATERIALS_BUILD__ = "V0.35.59-R88-SURFACES";
+window.__STORE_VISIBLE_MATERIALS_BUILD__ = "V0.35.61-R91-NO-FAKE-ASSET-TEXTURES";
