@@ -20,7 +20,6 @@ function IsDetailNode(Object) {
     if (
       Data.DecorationNoCollision === true ||
       Data.CompactPriceAuthorityR83 === true ||
-      Data.ShelfStockR83 === true ||
       Data.WalkableCarpetR87 === true ||
       Data.DecorationKind === "Rug" ||
       Data.DecorationKind === "LargeShowroomRug" ||
@@ -50,7 +49,6 @@ function ScanChunkDetails(Chunk) {
     const Data = Object.userData || {};
     if (
       Data.CompactPriceAuthorityR83 === true ||
-      Data.ShelfStockR83 === true ||
       Data.WalkableCarpetR87 === true ||
       Data.DecorationKind === "Rug" ||
       Data.DecorationKind === "LargeShowroomRug" ||
