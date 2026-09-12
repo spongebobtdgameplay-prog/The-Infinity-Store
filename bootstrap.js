@@ -1,5 +1,5 @@
-const Cache = "20260907-v03558-real-aisles1";
-const Version = "0.35.58";
+const Cache = "20260912-v03559-visual-stability1";
+const Version = "0.35.59";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
