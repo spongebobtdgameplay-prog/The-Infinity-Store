@@ -5,6 +5,9 @@ if (!Game?.ActiveChunks || !Game?.PreparedChunks || !Game?.CollisionBoxes) throw
 
 const State = new WeakMap();
 const TempCenter = new THREE.Vector3();
+const SeamStructureNames = new Set([
+  "Floor", "Ceiling", "WallLeft", "WallRight", "BaseboardLeft", "BaseboardRight"
+]);
 
 const ManagedNames = new Set([
   "Couch_Large1", "Couch_L", "Chair_2", "Table_RoundLarge", "Bed_King", "Bed_Single",
@@ -36,6 +39,70 @@ function ManagedRoots(Chunk) {
     Roots.push(Object);
   }
   return Roots;
+}
+
+function SetBoxChunkDepth(Box, Chunk) {
+  if (!Box?.min || !Box?.max) return;
+  Box.min.z = Chunk.BottomZ;
+  Box.max.z = Chunk.TopZ;
+}
+
+function NormalizeChunkSeams(Chunk) {
+  if (!Chunk?.Group || Chunk.Group.userData?.SeamNormalizedR90) return;
+  const TargetDepth = Math.max(0.001, Number(Chunk.TopZ) - Number(Chunk.BottomZ));
+
+  for (const Name of SeamStructureNames) {
+    const Object = Chunk.Group.getObjectByName?.(Name);
+    if (!Object?.isMesh || !Object.geometry) continue;
+    Object.geometry.computeBoundingBox?.();
+    const LocalBounds = Object.geometry.boundingBox;
+    if (!LocalBounds?.min || !LocalBounds?.max) continue;
+    const LocalDepth = (LocalBounds.max.z - LocalBounds.min.z) * Math.abs(Number(Object.scale?.z) || 1);
+    if (!Number.isFinite(LocalDepth) || LocalDepth <= 0.0001) continue;
+    if (Math.abs(LocalDepth - TargetDepth) <= 0.001) continue;
+    Object.scale.z *= TargetDepth / LocalDepth;
+    Object.updateMatrix();
+    Object.updateWorldMatrix(true, true);
+    Object.geometry.computeBoundingSphere?.();
+    Object.userData.SeamNormalizedR90 = true;
+  }
+
+  for (const Entry of Chunk.CollisionEntries || []) {
+    if (!SeamStructureNames.has(String(Entry?.Type || ""))) continue;
+    SetBoxChunkDepth(Entry.Box, Chunk);
+    SetBoxChunkDepth(Entry.OriginalBox, Chunk);
+    SetBoxChunkDepth(Entry.OriginalLegacyBox, Chunk);
+    SetBoxChunkDepth(Entry.OriginalStructureBox, Chunk);
+  }
+
+  Chunk.Group.userData.SeamNormalizedR90 = true;
+}
+
+function ProtectVisualStreaming(Chunk) {
+  let Changed = false;
+  for (const Object of ManagedRoots(Chunk)) {
+    if (!Object?.userData) continue;
+    if (Object.userData.StreamAmbientR101 !== true) Changed = true;
+    Object.userData.StreamAmbientR101 = true;
+    Object.userData.ObjectStreamCulledR101 = false;
+    Object.userData.ObjectStreamWasVisibleR101 = true;
+    Object.visible = true;
+  }
+
+  for (const Object of Chunk.Group?.children || []) {
+    if (!Object?.userData || Object.userData?.CompactPriceAuthorityR83) continue;
+    if (!Object.userData?.LayoutSlot && !Object.userData?.RetailSellableR84) continue;
+    if (Object.userData.StreamAmbientR101 !== true) Changed = true;
+    Object.userData.StreamAmbientR101 = true;
+    Object.userData.ObjectStreamCulledR101 = false;
+    Object.userData.ObjectStreamWasVisibleR101 = true;
+    Object.visible = true;
+  }
+
+  if (Changed) {
+    delete Chunk.StreamableRootsR101;
+    delete Chunk.StreamableRootsStampR101;
+  }
 }
 
 function RemoveCollisionForObject(Chunk, Object) {
@@ -153,9 +220,12 @@ function ChunkSignature(Chunk) {
 
 export function ProcessChunk(Chunk) {
   if (!Chunk?.Ready || Chunk.Cancelled || !Chunk.Group?.userData?.WorldPolishR72 || !Chunk.Layout) return;
+  NormalizeChunkSeams(Chunk);
+  ProtectVisualStreaming(Chunk);
   const Signature = ChunkSignature(Chunk);
   if (State.get(Chunk) === Signature) return;
   ValidatePlannedObjects(Chunk);
+  ProtectVisualStreaming(Chunk);
   State.set(Chunk, ChunkSignature(Chunk));
   Chunk.Group.userData.GeneratorIntegrityR77 = true;
 }
@@ -172,4 +242,4 @@ export function ProcessAll() {
 ProcessAll();
 
 window.__STORE_GENERATOR_INTEGRITY_R77__ = { ProcessAll, ProcessChunk };
-window.__STORE_GENERATOR_INTEGRITY_BUILD__ = "V0.35.51-LAYOUT-AUTHORITY";
+window.__STORE_GENERATOR_INTEGRITY_BUILD__ = "V0.35.60-R90-SEAM-STREAM-GUARD";
