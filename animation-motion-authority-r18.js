@@ -26,7 +26,10 @@ function StateFor(Mixer) {
     HasPosition: false,
     SmoothedSpeed: 0,
     Moving: false,
+    InputMoving: false,
     ContactDriven: false,
+    LowerBodyAttempt: false,
+    ContactPart: "",
     ContactPressure: 0,
     ContactIntent: 0,
     ResolvedMoving: false,
@@ -54,6 +57,10 @@ function FindActions(Mixer) {
   return Result;
 }
 
+function IsLowerBodyContact(Part) {
+  return /upper-leg|lower-leg|foot|fallback-body-[01]$/i.test(String(Part || ""));
+}
+
 function UpdateMeasuredMotion(Mixer, Delta) {
   const Pivot = FindPlayerPivot(Mixer);
   if (!Pivot) return null;
@@ -77,6 +84,7 @@ function UpdateMeasuredMotion(Mixer, Delta) {
   let RawSpeed = 0;
   if (FreshResolved) {
     State.ResolvedMoving = Boolean(MotionFrame.HasMovement);
+    State.InputMoving = Boolean(MotionFrame.InputMoving);
     State.ResolvedSpeed = Math.max(0, Number(MotionFrame.Speed) || 0);
     RawSpeed = State.ResolvedSpeed;
   } else {
@@ -86,6 +94,7 @@ function UpdateMeasuredMotion(Mixer, Delta) {
     );
     RawSpeed = Distance / SafeDelta;
     State.ResolvedMoving = Distance > 0.00025;
+    State.InputMoving = State.ResolvedMoving;
     State.ResolvedSpeed = RawSpeed;
   }
 
@@ -115,28 +124,36 @@ function UpdateMeasuredMotion(Mixer, Delta) {
     0,
     1
   );
+  const ContactPart = String(Contact?.BodyPart || "");
+  const LowerBodyContact = FreshContact && IsLowerBodyContact(ContactPart);
+  const LowerBodyAttempt = Boolean(
+    LowerBodyContact &&
+    State.InputMoving &&
+    !State.ResolvedMoving
+  );
 
-  // Bracing is only the no-displacement case. The moment collision resolves
-  // into actual sideways/forward movement, locomotion owns the animation.
   const Bracing = Boolean(
     FreshContact &&
+    !LowerBodyContact &&
     ContactIntent > 0.22 &&
     !State.ResolvedMoving
   );
 
   State.ContactDriven = Bracing;
+  State.LowerBodyAttempt = LowerBodyAttempt;
+  State.ContactPart = ContactPart;
   State.ContactIntent = THREE.MathUtils.lerp(
     State.ContactIntent,
-    Bracing ? ContactIntent : 0,
+    Bracing || LowerBodyAttempt ? ContactIntent : 0,
     Alpha
   );
   State.ContactPressure = THREE.MathUtils.lerp(
     State.ContactPressure,
-    Bracing ? ContactPressure : 0,
+    Bracing || LowerBodyAttempt ? ContactPressure : 0,
     Alpha
   );
 
-  if (State.ResolvedMoving) {
+  if (State.ResolvedMoving || LowerBodyAttempt) {
     State.Moving = true;
   } else if (Bracing) {
     State.Moving = true;
@@ -167,6 +184,7 @@ function ApplyAnimationWeights(Mixer, Delta, State) {
     EdgeAge < 120
   );
   const Bracing = Boolean(State?.ContactDriven) && !ResolvedMoving;
+  const LowerBodyAttempt = Boolean(State?.LowerBodyAttempt) && !ResolvedMoving;
   const Pressure = THREE.MathUtils.clamp(Number(State?.ContactPressure) || 0, 0, 1);
   const Intent = THREE.MathUtils.clamp(Number(State?.ContactIntent) || 0, 0, 1);
 
@@ -177,9 +195,6 @@ function ApplyAnimationWeights(Mixer, Delta, State) {
   };
 
   if (ResolvedMoving) {
-    // Final physics displacement is authoritative. Ledge transitions still
-    // animate movement, but the base flat-ground clip is deliberately reduced
-    // because geometry-driven IK owns both legs during the split stance.
     if (EdgeActive && Actions.walk) {
       DesiredWeights.walk = 0.46;
       DesiredWeights.idle = Actions.idle ? 0.54 : 0;
@@ -191,8 +206,12 @@ function ApplyAnimationWeights(Mixer, Delta, State) {
       DesiredWeights[Target] = 1;
       State.Target = Target;
     }
+  } else if (LowerBodyAttempt) {
+    DesiredWeights.walk = Actions.walk ? 0.84 : 0;
+    DesiredWeights.idle = Actions.idle ? 0.16 : 0;
+    if (!Actions.idle && Actions.walk) DesiredWeights.walk = 1;
+    State.Target = "lower-body-contact";
   } else if (Bracing) {
-    // No actual displacement: show effort/brace instead of a full stride.
     const AttemptWeight = THREE.MathUtils.clamp(
       0.24 + Intent * 0.18 - Pressure * 0.06,
       0.20,
@@ -240,9 +259,11 @@ function ApplyAnimationWeights(Mixer, Delta, State) {
               0.58,
               1.15
             )
-          : Bracing && Kind === "walk"
-            ? THREE.MathUtils.lerp(0.72, 0.42, Pressure)
-            : 1;
+          : LowerBodyAttempt && Kind === "walk"
+            ? 0.88
+            : Bracing && Kind === "walk"
+              ? THREE.MathUtils.lerp(0.72, 0.42, Pressure)
+              : 1;
       const CurrentScale = Number(Action.getEffectiveTimeScale?.()) || 1;
       Action.setEffectiveTimeScale(
         THREE.MathUtils.lerp(CurrentScale, TargetScale, Alpha)
@@ -261,4 +282,4 @@ THREE.AnimationMixer.prototype.update = function UpdateAnimationFromMotionAndVie
 };
 
 window.__STORE_ANIMATION_MOTION_AUTHORITY__ = MixerStates;
-window.__STORE_ANIMATION_MOTION_AUTHORITY_BUILD__ = "V0.35.14-LATCHED-EDGE";
+window.__STORE_ANIMATION_MOTION_AUTHORITY_BUILD__ = "V0.35.61-LIMB-INDEPENDENT-CONTACT";
