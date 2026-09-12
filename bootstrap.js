@@ -1,5 +1,5 @@
-const Cache = "20260912-v03559-visual-stability1";
-const Version = "0.35.59";
+const Cache = "20260912-v03560-warp-stream1";
+const Version = "0.35.60";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -265,7 +265,6 @@ async function EnsureCurrentWorldReady() {
     throw new Error("World changed before the start gate could unlock.");
   }
 
-  // Attach the completed view range before entry, not one frame after it.
   for (const Chunk of BootChunks) {
     if (!Game.TryActivateIndex(Chunk.Index)) throw new Error(`Aisle ${Chunk.Index + 1} could not activate.`);
   }
