@@ -1,18 +1,16 @@
 import * as THREE from "three";
 
-const Build = "V0.35.63-R93-MESH-PART-COLLISION";
-const ShapeCache = new WeakMap();
-const PatchedEntries = new WeakSet();
-const DetailRoots = new Set();
+const Build = "V0.35.65-R94-EXACT-VISIBLE-COLLISION";
 const EyeHeight = 1.68;
-const ScratchLocal = new THREE.Vector3();
-const ScratchWorld = new THREE.Vector3();
-const ScratchScale = new THREE.Vector3();
-const BathroomProfiles = new Map([
-  ["Bathroom_Toilet", { Color: 0xc9c4ba, Roughness: 0.48, Metalness: 0.01 }],
-  ["Bathroom_Bathtub", { Color: 0xc9c4ba, Roughness: 0.50, Metalness: 0.01 }],
-  ["Bathroom_Sink", { Color: 0xc5c1b7, Roughness: 0.46, Metalness: 0.02 }]
-]);
+const CellSize = 0.42;
+const VerticalSkin = 0.022;
+const ShapeCache = new WeakMap();
+const PatchedEntries = new WeakMap();
+const PendingEntries = new Set();
+const ScratchA = new THREE.Vector3();
+const ScratchB = new THREE.Vector3();
+const ScratchC = new THREE.Vector3();
+let WorkScheduled = false;
 
 function IsDetailNode(Object) {
   let Current = Object;
@@ -20,12 +18,13 @@ function IsDetailNode(Object) {
     const Data = Current.userData || {};
     const Name = String(Current.name || "");
     if (
+      Data.DecorationNoCollision === true ||
       Data.CompactPriceAuthorityR83 === true ||
       Data.ShelfStockR83 === true ||
       Data.WalkableCarpetR87 === true ||
       Data.DecorationKind === "Rug" ||
       Data.DecorationKind === "LargeShowroomRug" ||
-      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet/i.test(Name)
+      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet|Text|Label|Glow|Highlight|Selection|Outline/i.test(Name)
     ) return true;
     Current = Current.parent || null;
   }
@@ -34,7 +33,6 @@ function IsDetailNode(Object) {
 
 function MarkDetailNoCollision(Object) {
   if (!Object?.isObject3D) return;
-  DetailRoots.add(Object);
   Object.traverse(Child => {
     Child.userData ||= {};
     Child.userData.DecorationNoCollision = true;
@@ -46,9 +44,19 @@ function MarkDetailNoCollision(Object) {
 
 function ScanChunkDetails(Chunk) {
   if (!Chunk?.Group) return;
-  for (const Object of Chunk.Group.children || []) {
-    if (IsDetailNode(Object)) MarkDetailNoCollision(Object);
-  }
+  Chunk.Group.traverse(Object => {
+    if (Object === Chunk.Group) return;
+    const Name = String(Object.name || "");
+    const Data = Object.userData || {};
+    if (
+      Data.CompactPriceAuthorityR83 === true ||
+      Data.ShelfStockR83 === true ||
+      Data.WalkableCarpetR87 === true ||
+      Data.DecorationKind === "Rug" ||
+      Data.DecorationKind === "LargeShowroomRug" ||
+      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet/i.test(Name)
+    ) MarkDetailNoCollision(Object);
+  });
 }
 
 function EntryObject(Entry) {
@@ -80,69 +88,138 @@ function MaterialVisible(Material) {
 }
 
 function MeshCanCollide(Object) {
-  if (!Object?.isMesh || !Object.geometry) return false;
+  if (!Object?.isMesh || !Object.visible || !Object.geometry?.attributes?.position) return false;
   if (IsDetailNode(Object)) return false;
-  if (/Text|Label|Glow|Highlight|Selection|Outline/i.test(String(Object.name || ""))) return false;
   const Materials = Array.isArray(Object.material) ? Object.material : [Object.material];
   return !Materials.length || Materials.some(MaterialVisible);
 }
 
-function BuildShape(Model) {
-  const Existing = ShapeCache.get(Model);
-  if (Existing) return Existing;
+function CellKey(X, Z) {
+  return `${X}:${Z}`;
+}
+
+function DistanceSquaredToSegment(X, Z, A, B) {
+  const DX = B.x - A.x;
+  const DZ = B.y - A.y;
+  const LengthSquared = DX * DX + DZ * DZ;
+  if (LengthSquared <= 0.0000001) {
+    const PX = X - A.x;
+    const PZ = Z - A.y;
+    return PX * PX + PZ * PZ;
+  }
+  const T = THREE.MathUtils.clamp(((X - A.x) * DX + (Z - A.y) * DZ) / LengthSquared, 0, 1);
+  const PX = X - (A.x + DX * T);
+  const PZ = Z - (A.y + DZ * T);
+  return PX * PX + PZ * PZ;
+}
+
+function PointInsideTriangle(X, Z, A, B, C) {
+  const Area = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+  if (Math.abs(Area) <= 0.0000001) return false;
+  const AB = (B.x - A.x) * (Z - A.y) - (B.y - A.y) * (X - A.x);
+  const BC = (C.x - B.x) * (Z - B.y) - (C.y - B.y) * (X - B.x);
+  const CA = (A.x - C.x) * (Z - C.y) - (A.y - C.y) * (X - C.x);
+  const HasNegative = AB < -0.000001 || BC < -0.000001 || CA < -0.000001;
+  const HasPositive = AB > 0.000001 || BC > 0.000001 || CA > 0.000001;
+  return !(HasNegative && HasPositive);
+}
+
+function CircleHitsTriangle(X, Z, RadiusSquared, Triangle) {
+  return PointInsideTriangle(X, Z, Triangle.A, Triangle.B, Triangle.C) ||
+    DistanceSquaredToSegment(X, Z, Triangle.A, Triangle.B) <= RadiusSquared ||
+    DistanceSquaredToSegment(X, Z, Triangle.B, Triangle.C) <= RadiusSquared ||
+    DistanceSquaredToSegment(X, Z, Triangle.C, Triangle.A) <= RadiusSquared;
+}
+
+function AddTriangleToGrid(Grid, Triangle, Index) {
+  const MinX = Math.floor(Math.min(Triangle.A.x, Triangle.B.x, Triangle.C.x) / CellSize);
+  const MaxX = Math.floor(Math.max(Triangle.A.x, Triangle.B.x, Triangle.C.x) / CellSize);
+  const MinZ = Math.floor(Math.min(Triangle.A.y, Triangle.B.y, Triangle.C.y) / CellSize);
+  const MaxZ = Math.floor(Math.max(Triangle.A.y, Triangle.B.y, Triangle.C.y) / CellSize);
+  for (let X = MinX; X <= MaxX; X += 1) {
+    for (let Z = MinZ; Z <= MaxZ; Z += 1) {
+      const Key = CellKey(X, Z);
+      if (!Grid.has(Key)) Grid.set(Key, []);
+      Grid.get(Key).push(Index);
+    }
+  }
+}
+
+function ModelSignature(Model) {
+  Model.updateWorldMatrix(true, true);
+  let Signature = `${Model.matrixWorld.elements.map(Value => Number(Value).toFixed(4)).join(":")}:${Model.children.length}`;
+  Model.traverse(Object => {
+    if (!Object?.isMesh || !Object.geometry) return;
+    Object.updateWorldMatrix(true, false);
+    Signature += `|${Object.geometry.uuid}:${Object.matrixWorld.elements.map(Value => Number(Value).toFixed(4)).join(":")}`;
+  });
+  return Signature;
+}
+
+function BuildShape(Model, Signature) {
+  const Cached = ShapeCache.get(Model);
+  if (Cached?.Signature === Signature) return Cached.Shape;
 
   Model.updateWorldMatrix(true, true);
-  const Pieces = [];
+  const Triangles = [];
+  const Grid = new Map();
   const Bounds = new THREE.Box3().makeEmpty();
 
   Model.traverse(Object => {
     if (!MeshCanCollide(Object)) return;
-    Object.geometry.computeBoundingBox?.();
-    const LocalBox = Object.geometry.boundingBox?.clone?.();
-    if (!LocalBox || LocalBox.isEmpty()) return;
-
     Object.updateWorldMatrix(true, false);
-    const Inverse = Object.matrixWorld.clone().invert();
-    Object.getWorldScale(ScratchScale);
-    const Scale = ScratchScale.clone().set(
-      Math.abs(ScratchScale.x),
-      Math.abs(ScratchScale.y),
-      Math.abs(ScratchScale.z)
-    );
-    const WorldBox = LocalBox.clone().applyMatrix4(Object.matrixWorld);
-    if (WorldBox.isEmpty()) return;
+    const Position = Object.geometry.attributes.position;
+    const Index = Object.geometry.index || null;
+    const TriangleCount = Index ? Math.floor(Index.count / 3) : Math.floor(Position.count / 3);
 
-    const Width = WorldBox.max.x - WorldBox.min.x;
-    const Height = WorldBox.max.y - WorldBox.min.y;
-    const Depth = WorldBox.max.z - WorldBox.min.z;
-    if (Width < 0.008 && Height < 0.008 && Depth < 0.008) return;
+    for (let TriangleIndex = 0; TriangleIndex < TriangleCount; TriangleIndex += 1) {
+      const Offset = TriangleIndex * 3;
+      const IA = Index ? Index.getX(Offset) : Offset;
+      const IB = Index ? Index.getX(Offset + 1) : Offset + 1;
+      const IC = Index ? Index.getX(Offset + 2) : Offset + 2;
+      ScratchA.fromBufferAttribute(Position, IA).applyMatrix4(Object.matrixWorld);
+      ScratchB.fromBufferAttribute(Position, IB).applyMatrix4(Object.matrixWorld);
+      ScratchC.fromBufferAttribute(Position, IC).applyMatrix4(Object.matrixWorld);
 
-    Pieces.push({ LocalBox, Inverse, Scale, WorldBox });
-    Bounds.union(WorldBox);
+      const ABX = ScratchB.x - ScratchA.x;
+      const ABZ = ScratchB.z - ScratchA.z;
+      const BCX = ScratchC.x - ScratchB.x;
+      const BCZ = ScratchC.z - ScratchB.z;
+      const CAX = ScratchA.x - ScratchC.x;
+      const CAZ = ScratchA.z - ScratchC.z;
+      const HorizontalSpanSquared = Math.max(
+        ABX * ABX + ABZ * ABZ,
+        BCX * BCX + BCZ * BCZ,
+        CAX * CAX + CAZ * CAZ
+      );
+      if (HorizontalSpanSquared <= 0.000004) continue;
+
+      const Triangle = {
+        A: new THREE.Vector2(ScratchA.x, ScratchA.z),
+        B: new THREE.Vector2(ScratchB.x, ScratchB.z),
+        C: new THREE.Vector2(ScratchC.x, ScratchC.z),
+        MinY: Math.min(ScratchA.y, ScratchB.y, ScratchC.y),
+        MaxY: Math.max(ScratchA.y, ScratchB.y, ScratchC.y)
+      };
+
+      const NewIndex = Triangles.length;
+      Triangles.push(Triangle);
+      Bounds.expandByPoint(ScratchA);
+      Bounds.expandByPoint(ScratchB);
+      Bounds.expandByPoint(ScratchC);
+      AddTriangleToGrid(Grid, Triangle, NewIndex);
+    }
   });
 
-  const Shape = { Pieces: Pieces.slice(0, 72), Bounds };
-  ShapeCache.set(Model, Shape);
+  const Shape = { Triangles, Grid, Bounds };
+  ShapeCache.set(Model, { Signature, Shape });
   return Shape;
 }
 
-function PieceHitsPlayer(Position, Radius, Piece) {
-  const FeetY = Position.y - EyeHeight + 0.035;
-  const HeadY = Position.y + 0.08;
-  if (Piece.WorldBox.max.y < FeetY || Piece.WorldBox.min.y > HeadY) return false;
-
-  ScratchLocal.copy(Position).applyMatrix4(Piece.Inverse);
-  const ClosestX = THREE.MathUtils.clamp(ScratchLocal.x, Piece.LocalBox.min.x, Piece.LocalBox.max.x);
-  const ClosestZ = THREE.MathUtils.clamp(ScratchLocal.z, Piece.LocalBox.min.z, Piece.LocalBox.max.z);
-  const DX = (ScratchLocal.x - ClosestX) * Math.max(Piece.Scale.x, 0.0001);
-  const DZ = (ScratchLocal.z - ClosestZ) * Math.max(Piece.Scale.z, 0.0001);
-  return DX * DX + DZ * DZ <= Radius * Radius;
-}
-
 function ShapeHitsPlayer(Position, Radius, Shape) {
-  if (!Shape?.Pieces?.length || Shape.Bounds.isEmpty()) return false;
-  const EffectiveRadius = THREE.MathUtils.clamp(Number(Radius) || 0.255, 0.20, 0.28);
-  const FeetY = Position.y - EyeHeight + 0.035;
+  if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) return false;
+  const EffectiveRadius = THREE.MathUtils.clamp(Number(Radius) || 0.255, 0.20, 0.255);
+  const FeetY = Position.y - EyeHeight + 0.025;
   const HeadY = Position.y + 0.08;
 
   if (
@@ -150,113 +227,105 @@ function ShapeHitsPlayer(Position, Radius, Shape) {
     Position.x - EffectiveRadius > Shape.Bounds.max.x ||
     Position.z + EffectiveRadius < Shape.Bounds.min.z ||
     Position.z - EffectiveRadius > Shape.Bounds.max.z ||
-    HeadY < Shape.Bounds.min.y ||
-    FeetY > Shape.Bounds.max.y
+    HeadY < Shape.Bounds.min.y - VerticalSkin ||
+    FeetY > Shape.Bounds.max.y + VerticalSkin
   ) return false;
 
-  for (const Piece of Shape.Pieces) {
-    if (PieceHitsPlayer(Position, EffectiveRadius, Piece)) return true;
+  const MinCellX = Math.floor((Position.x - EffectiveRadius) / CellSize);
+  const MaxCellX = Math.floor((Position.x + EffectiveRadius) / CellSize);
+  const MinCellZ = Math.floor((Position.z - EffectiveRadius) / CellSize);
+  const MaxCellZ = Math.floor((Position.z + EffectiveRadius) / CellSize);
+  const RadiusSquared = EffectiveRadius * EffectiveRadius;
+  const Seen = new Set();
+
+  for (let X = MinCellX; X <= MaxCellX; X += 1) {
+    for (let Z = MinCellZ; Z <= MaxCellZ; Z += 1) {
+      for (const Index of Shape.Grid.get(CellKey(X, Z)) || []) {
+        if (Seen.has(Index)) continue;
+        Seen.add(Index);
+        const Triangle = Shape.Triangles[Index];
+        if (Triangle.MaxY < FeetY - VerticalSkin || Triangle.MinY > HeadY + VerticalSkin) continue;
+        if (CircleHitsTriangle(Position.x, Position.z, RadiusSquared, Triangle)) return true;
+      }
+    }
   }
+
   return false;
 }
 
-function PatchExactEntry(Entry) {
-  if (!Entry?.CoreFixR87 || PatchedEntries.has(Entry)) return;
+function PatchEntry(Entry) {
+  if (!Entry?.CoreFixR87 || Entry.Active === false) return false;
   const Model = Entry.CollisionObject;
-  if (!Model?.isObject3D || IsDetailNode(Model)) return;
+  if (!Model?.isObject3D || !Model.parent || IsDetailNode(Model)) return false;
 
-  const Shape = BuildShape(Model);
-  if (!Shape?.Pieces?.length || Shape.Bounds.isEmpty()) return;
+  const Signature = ModelSignature(Model);
+  if (PatchedEntries.get(Entry) === Signature) return false;
+
+  const Shape = BuildShape(Model, Signature);
+  if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) return false;
 
   Entry.Box = Shape.Bounds.clone();
   Entry.OriginalBox = Shape.Bounds.clone();
   Entry.OriginalLegacyBox = Shape.Bounds.clone();
   Entry.TestPlayerCollision = (Position, Radius = 0.255) => ShapeHitsPlayer(Position, Radius, Shape);
   Entry.TestCollision = (Position, Radius = 0.255) => ShapeHitsPlayer(Position, Radius, Shape);
-  Entry.VisibleCollisionR93 = true;
-  Entry.Active = Entry.Active !== false;
-  PatchedEntries.add(Entry);
+  Entry.PreciseGeometry = true;
+  Entry.LegacyCollisionDisabled = true;
+  Entry.VisibleCollisionR94 = true;
+  PatchedEntries.set(Entry, Signature);
+  return true;
 }
 
-function PatchCollisionEntries(Game) {
-  const Seen = new Set();
-  const Patch = Entry => {
-    if (!Entry || Seen.has(Entry)) return;
-    Seen.add(Entry);
-    PatchExactEntry(Entry);
+function QueueEntries(Game) {
+  for (const Entry of Game.CollisionBoxes || []) {
+    if (Entry?.CoreFixR87 && Entry.Active !== false) PendingEntries.add(Entry);
+  }
+  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
+    ScanChunkDetails(Chunk);
+    for (const Entry of Chunk?.CollisionEntries || []) {
+      if (Entry?.CoreFixR87 && Entry.Active !== false) PendingEntries.add(Entry);
+    }
+  }
+}
+
+function ScheduleWork() {
+  if (WorkScheduled || !PendingEntries.size) return;
+  WorkScheduled = true;
+
+  const Run = Deadline => {
+    WorkScheduled = false;
+    let Processed = 0;
+    const CanContinue = () => !Deadline || Deadline.didTimeout || Deadline.timeRemaining() > 3;
+
+    for (const Entry of [...PendingEntries]) {
+      PendingEntries.delete(Entry);
+      PatchEntry(Entry);
+      Processed += 1;
+      if (Processed >= 2 || !CanContinue()) break;
+    }
+
+    if (PendingEntries.size) ScheduleWork();
   };
 
-  for (const Entry of Game.CollisionBoxes || []) Patch(Entry);
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Patch(Entry);
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) for (const Entry of Chunk?.CollisionEntries || []) Patch(Entry);
-}
-
-function NormalizeAssetRoot(Root) {
-  const Profile = BathroomProfiles.get(String(Root?.name || ""));
-  if (!Profile || Root.userData?.VisibleAssetMaterialR93) return;
-  Root.userData.VisibleAssetMaterialR93 = true;
-
-  Root.traverse(Object => {
-    if (!Object?.isMesh || !Object.material) return;
-    const Source = Array.isArray(Object.material) ? Object.material : [Object.material];
-    const Updated = Source.map(Material => {
-      if (!Material || Material.map || !Material.color?.isColor) return Material;
-      const Hex = Material.color.getHex(THREE.SRGBColorSpace);
-      const Red = (Hex >> 16) & 255;
-      const Green = (Hex >> 8) & 255;
-      const Blue = Hex & 255;
-      if (Math.min(Red, Green, Blue) < 215) return Material;
-      const Clone = Material.clone();
-      Clone.color.setHex(Profile.Color, THREE.SRGBColorSpace);
-      if ("roughness" in Clone) Clone.roughness = Profile.Roughness;
-      if ("metalness" in Clone) Clone.metalness = Profile.Metalness;
-      Clone.needsUpdate = true;
-      return Clone;
-    });
-    Object.material = Array.isArray(Object.material) ? Updated : Updated[0];
-  });
-}
-
-function ScanAssets(Chunk) {
-  for (const Model of Chunk?.Models || []) NormalizeAssetRoot(Model);
-  for (const Object of Chunk?.Group?.children || []) NormalizeAssetRoot(Object);
-}
-
-function UpdateDetailVisibility(Game) {
-  for (const Object of [...DetailRoots]) {
-    if (!Object?.parent) {
-      DetailRoots.delete(Object);
-      continue;
-    }
-    Object.getWorldPosition(ScratchWorld);
-    const Distance = Math.hypot(
-      Game.Camera.position.x - ScratchWorld.x,
-      Game.Camera.position.z - ScratchWorld.z
-    );
-    const IsPrice = Object.userData?.CompactPriceAuthorityR83 === true || /Price|Placard/i.test(String(Object.name || ""));
-    Object.visible = Distance <= (IsPrice ? 26 : 38);
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(Run, { timeout: 180 });
+  } else {
+    setTimeout(() => Run(null), 16);
   }
 }
 
 function Install() {
   const Game = window.__STORE_GAME__;
-  if (!Game?.Scene || !Game?.Camera || !Game?.CollisionBoxes) return false;
+  if (!Game?.CollisionBoxes || !Game?.ActiveChunks) return false;
 
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
-    ScanChunkDetails(Chunk);
-    ScanAssets(Chunk);
-  }
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) {
-    ScanChunkDetails(Chunk);
-    ScanAssets(Chunk);
-  }
-
+  for (const Chunk of Game.ActiveChunks.values()) ScanChunkDetails(Chunk);
+  for (const Chunk of Game.PreparedChunks?.values?.() || []) ScanChunkDetails(Chunk);
   PurgeDetailEntries(Game);
-  PatchCollisionEntries(Game);
-  UpdateDetailVisibility(Game);
+  QueueEntries(Game);
+  ScheduleWork();
 
   const BuildNode = document.getElementById("BuildVersion");
-  if (BuildNode) BuildNode.textContent = "BUILD V0.35.63";
+  if (BuildNode) BuildNode.textContent = "BUILD V0.35.65";
   window.__STORE_VISIBLE_COLLISION_FIX_BUILD__ = Build;
   return true;
 }
@@ -264,9 +333,9 @@ function Install() {
 let Attempts = 0;
 const Start = setInterval(() => {
   Attempts += 1;
-  if (Install() || Attempts > 100) clearInterval(Start);
+  if (Install() || Attempts > 120) clearInterval(Start);
 }, 50);
 
-setInterval(Install, 850);
+setInterval(Install, 700);
 addEventListener("store-world-buffer-progress", Install);
 addEventListener("store-settings-change", Install);
