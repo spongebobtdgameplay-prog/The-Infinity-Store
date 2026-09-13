@@ -1,1 +1,1 @@
-0.35.58: Remove adaptive-resolution blur and boundary haze. Keep the full real-aisle view range loaded with a bidirectional prefetch buffer.
+0.35.67: Remove the duplicate R96 triangle-collision and per-frame render passes. Restore lightweight built-in streaming, add cheap physical-object collision only where CoreFixR87 has no owner, restore third-person wheel distance, and add visual-only upper-body contact plus spring-smoothed character secondary motion.
