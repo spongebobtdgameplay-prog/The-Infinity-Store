@@ -5,15 +5,12 @@ export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
     const Check = () => {
       const GameplayActive = window.__STORE_GAMEPLAY_STARTED__ === true;
       const RequiredIdleMs = GameplayActive
-        ? Math.min(Math.max(3.5, MinimumMs), 4.5)
+        ? Math.min(Math.max(2.25, MinimumMs), 3.25)
         : MinimumMs;
 
       if (!("requestIdleCallback" in window)) {
-        // During gameplay, leave two display frames between heavy background jobs.
-        requestAnimationFrame(() => {
-          if (GameplayActive) requestAnimationFrame(() => Resolve());
-          else Resolve();
-        });
+        // During gameplay, leave a display frame between heavy background jobs.
+        requestAnimationFrame(() => Resolve());
         return;
       }
 
@@ -26,8 +23,8 @@ export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
           return;
         }
 
-        // Boot must eventually make progress. Gameplay background generation is
-        // different: never cash in a timeout by stealing a visibly busy frame.
+        // Boot must eventually make progress. Gameplay background work should
+        // wait for actual idle time instead of forcing itself into a hot frame.
         if (!GameplayActive && Elapsed >= MaximumWaitMs) {
           Resolve();
           return;
@@ -41,7 +38,7 @@ export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
         requestAnimationFrame(Check);
       }, {
         timeout: GameplayActive
-          ? 1600
+          ? 900
           : Math.max(32, MaximumWaitMs - (performance.now() - StartedAt))
       });
     };
