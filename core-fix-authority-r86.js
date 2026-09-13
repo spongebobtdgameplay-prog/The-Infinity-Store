@@ -8,6 +8,7 @@ if (!Game?.Scene || !Game?.Camera || !Game?.CollisionBoxes || !Game?.ActiveChunk
 
 const SurfaceStep = window.__STORE_SURFACE_STEP_ANIMATION_R87__ || null;
 const Physics = window.__STORE_PROCEDURAL_PHYSICS__ || null;
+const EngineCollision = window.__STORE_ENGINE__?.Collision || null;
 const PlayerEyeHeight = 1.68;
 const CELL_SIZE = 0.58;
 const MIN_TRIANGLE_AREA = 0.0007;
@@ -137,7 +138,7 @@ function PurgeGhostAndLegacyEntries(Chunk) {
 function PointInsideTriangle(X, Z, A, B, C) {
   const AB = (B.x - A.x) * (Z - A.y) - (B.y - A.y) * (X - A.x);
   const BC = (C.x - B.x) * (Z - B.y) - (C.y - B.y) * (X - B.x);
-  const CA = (A.x - C.x) * (Z - C.y) - (A.y - C.y) * (X - C.x);
+  const CA = (A.x - C.x) * (Z - C.y) - (C.y - A.y) * (X - C.x);
   const HasNegative = AB < -0.000001 || BC < -0.000001 || CA < -0.000001;
   const HasPositive = AB > 0.000001 || BC > 0.000001 || CA > 0.000001;
   return !(HasNegative && HasPositive);
@@ -354,17 +355,9 @@ function InstallExactCollision(Chunk, Model) {
     Entry => Entry?.CoreFixR87 && Entry.CollisionObject === Model
   );
 
-  if (
-    Existing &&
-    ProcessedCollision.get(Model) === Signature
-  ) {
+  if (Existing && ProcessedCollision.get(Model) === Signature) {
     Existing.Active = Boolean(Chunk.Active);
-    if (
-      Chunk.Active &&
-      !Game.CollisionBoxes.includes(Existing)
-    ) {
-      Game.CollisionBoxes.push(Existing);
-    }
+    if (Chunk.Active && !Game.CollisionBoxes.includes(Existing)) Game.CollisionBoxes.push(Existing);
     return;
   }
 
@@ -388,21 +381,18 @@ function InstallExactCollision(Chunk, Model) {
     PreciseGeometry: true,
     LegacyCollisionDisabled: true,
     CollisionObject: Model,
-    TestPlayerCollision(Position, Radius = 0.28) {
+    TestPlayerCollision(Position, Radius = 0.48) {
       return CircleHitsExact(Position, Radius, Geometry, FallbackPieces, Origin, StableBox);
     }
   };
 
   Chunk.CollisionEntries.push(Entry);
-  if (Chunk.Active && !Game.CollisionBoxes.includes(Entry)) {
-    Game.CollisionBoxes.push(Entry);
-  }
+  if (Chunk.Active && !Game.CollisionBoxes.includes(Entry)) Game.CollisionBoxes.push(Entry);
 
   Model.userData.RayCollisionSolidR35 = true;
   Model.userData.LegacyMovementCollisionDisabledR35 = true;
   Model.traverse(Object => {
-    if (!Object?.isMesh) return;
-    Object.userData.RayCollisionSolidR35 = true;
+    if (Object?.isMesh) Object.userData.RayCollisionSolidR35 = true;
   });
 
   ProcessedCollision.set(Model, Signature);
@@ -503,6 +493,14 @@ function FixRetailZoneColors(Chunk) {
   }
 }
 
+function EnsureEngineCollision(Chunk) {
+  return EngineCollision?.EnsureChunkCollision?.(
+    Chunk,
+    Game.CollisionBoxes,
+    { EyeHeight: PlayerEyeHeight, MaximumPieces: 48 }
+  ) || 0;
+}
+
 function ChunkSignature(Chunk) {
   return [
     Chunk.Group?.children?.length || 0,
@@ -522,11 +520,7 @@ export async function ProcessChunkAsync(Chunk, Force = false) {
   if (!Chunk?.Ready || Chunk.Cancelled || !Chunk.Group) return;
 
   const BeforeSignature = ChunkSignature(Chunk);
-  if (
-    !Force &&
-    ProcessedChunks.get(Chunk) === BeforeSignature &&
-    Chunk.Group.userData?.CoreFixR88
-  ) return;
+  if (!Force && ProcessedChunks.get(Chunk) === BeforeSignature && Chunk.Group.userData?.CoreFixR88) return;
 
   RemoveDecorativeWindows(Chunk);
   PurgeGhostAndLegacyEntries(Chunk);
@@ -540,6 +534,9 @@ export async function ProcessChunkAsync(Chunk, Force = false) {
     if (Index < Roots.length - 1) await CollisionBudgetYield();
   }
 
+  // The engine fills any remaining physical-root collision holes with cheap
+  // compound mesh boxes. No runtime wrapper or per-frame triangle rebuilding.
+  EnsureEngineCollision(Chunk);
   FixRetailZoneColors(Chunk);
   Chunk.Group.userData.CoreFixR88 = true;
   Chunk.Group.userData.CoreFixR87 = true;
@@ -562,6 +559,7 @@ export function ProcessChunk(Chunk, Force = false) {
     FixDarkMaterials(Root);
     InstallExactCollision(Chunk, Root);
   }
+  EnsureEngineCollision(Chunk);
   FixRetailZoneColors(Chunk);
 
   Chunk.Group.userData.CoreFixR88 = true;
@@ -584,11 +582,8 @@ export function ProcessAll() {
   }
 }
 
-// Initial pass only. New chunks are processed explicitly by presentation-ready
-// after their furniture/retail passes finish. Avoid rescanning every chunk every
-// ~950 ms forever.
 ProcessAll();
 
 window.__STORE_CORE_FIX_R86__ = { ProcessAll, ProcessChunk, ProcessChunkAsync };
 window.__STORE_CORE_FIX_R87__ = window.__STORE_CORE_FIX_R86__;
-window.__STORE_CORE_FIX_BUILD__ = "V0.35.45-SPAWN-COLLISION-HANDOFF";
+window.__STORE_CORE_FIX_BUILD__ = "V0.35.69-R99-ENGINE-COLLISION";
