@@ -5,11 +5,11 @@ export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
     const Check = () => {
       const GameplayActive = window.__STORE_GAMEPLAY_STARTED__ === true;
       const RequiredIdleMs = GameplayActive
-        ? Math.min(Math.max(1.5, MinimumMs), 2.5)
+        ? Math.min(Math.max(3.5, MinimumMs), 4.5)
         : MinimumMs;
 
       if (!("requestIdleCallback" in window)) {
-        // During gameplay, yield at least one full frame before background work.
+        // During gameplay, leave two display frames between heavy background jobs.
         requestAnimationFrame(() => {
           if (GameplayActive) requestAnimationFrame(() => Resolve());
           else Resolve();
@@ -41,7 +41,7 @@ export function WaitForWorkSlice(MinimumMs = 6, MaximumWaitMs = 480) {
         requestAnimationFrame(Check);
       }, {
         timeout: GameplayActive
-          ? 1200
+          ? 1600
           : Math.max(32, MaximumWaitMs - (performance.now() - StartedAt))
       });
     };
