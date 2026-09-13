@@ -44,9 +44,9 @@ test('removed full-body triangle and per-render contact passes stay removed', ()
 });
 
 test('current version and bootstrap cache agree', () => {
-  assert.equal(read('VERSION').trim(), '0.35.70');
+  assert.equal(read('VERSION').trim(), '0.35.71');
   const bootstrap = read('bootstrap.js');
-  assert.match(bootstrap, /const Version = "0\.35\.70"/);
-  assert.match(bootstrap, /20260913-v03570-r100-render-collision1/);
-  assert.match(read('index.html'), /BUILD V0\.35\.70/);
+  assert.match(bootstrap, /const Version = "0\.35\.71"/);
+  assert.match(bootstrap, /20260913-v03571-r101-no-render-throttle1/);
+  assert.match(read('index.html'), /BUILD V0\.35\.71/);
 });
