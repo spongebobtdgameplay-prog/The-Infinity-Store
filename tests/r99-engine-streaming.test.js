@@ -43,8 +43,17 @@ test('R99 keeps a small asymmetric live aisle window', () => {
   assert.match(stream, /BootCount:\s*4/);
 });
 
-test('R99 cache-busts both the engine and bootstrap', () => {
+test('R99 background generation waits for real gameplay idle budget', () => {
+  const budget = read('render-work-budget.js');
+  assert.match(budget, /GameplayActive/);
+  assert.match(budget, /Deadline\.timeRemaining\(\) >= RequiredIdleMs/);
+  assert.match(budget, /!GameplayActive && Elapsed >= MaximumWaitMs/);
+});
+
+test('R99 cache-busts engine, bootstrap, stream range, and work budget', () => {
   const index = read('index.html');
   assert.match(index, /store-engine-core-r95\.js\?v=20260913-v03569-r99-engine1/);
   assert.match(index, /bootstrap\.js\?v=20260913-v03569-r99-engine-stream1/);
+  assert.match(index, /stream-range\.js\?v=20260913-v03569-r99-stream1/);
+  assert.match(index, /render-work-budget\.js\?v=20260913-v03569-r99-budget1/);
 });
