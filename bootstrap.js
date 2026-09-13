@@ -380,9 +380,7 @@ try {
 
   await EnsureCurrentWorldReady();
 
-  SetBootStage("Finalizing movement contact and the main menu...");
-  await import(`./movement-contact-compat-r25.js?v=${Cache}`);
-  await OptionalImport("./final-contact-r19.js", "Final limb contact");
+  SetBootStage("Finalizing the main menu...");
   await OptionalImport("./runtime-main-menu-r83.js", "Start-screen style resumable main menu");
 
   CoreReady = true;
