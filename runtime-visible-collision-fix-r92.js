@@ -1,96 +1,25 @@
-import * as THREE from "three";
+import {
+  THREE,
+  IsPhysicalMesh,
+  IsWalkableSurface
+} from "./store-engine-core-r95.js";
 
-const Build = "V0.35.65-R94-EXACT-VISIBLE-COLLISION";
+const Build = "V0.35.66-R95-VISIBLE-PHYSICAL-COLLISION";
 const EyeHeight = 1.68;
 const CellSize = 0.42;
 const VerticalSkin = 0.022;
-const ShapeCache = new WeakMap();
-const PatchedEntries = new WeakMap();
-const PendingEntries = new Set();
+const HorizontalFaceCutoff = 0.90;
+const PendingChunks = new Set();
+const ManagedChunks = new Map();
 const ScratchA = new THREE.Vector3();
 const ScratchB = new THREE.Vector3();
 const ScratchC = new THREE.Vector3();
+const ScratchAB = new THREE.Vector3();
+const ScratchAC = new THREE.Vector3();
+const ScratchNormal = new THREE.Vector3();
+const InstanceMatrix = new THREE.Matrix4();
+const WorldMatrix = new THREE.Matrix4();
 let WorkScheduled = false;
-
-function IsDetailNode(Object) {
-  let Current = Object;
-  while (Current) {
-    const Data = Current.userData || {};
-    const Name = String(Current.name || "");
-    if (
-      Data.DecorationNoCollision === true ||
-      Data.CompactPriceAuthorityR83 === true ||
-      Data.WalkableCarpetR87 === true ||
-      Data.DecorationKind === "Rug" ||
-      Data.DecorationKind === "LargeShowroomRug" ||
-      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet|Text|Label|Glow|Highlight|Selection|Outline/i.test(Name)
-    ) return true;
-    Current = Current.parent || null;
-  }
-  return false;
-}
-
-function MarkDetailNoCollision(Object) {
-  if (!Object?.isObject3D) return;
-  Object.traverse(Child => {
-    Child.userData ||= {};
-    Child.userData.DecorationNoCollision = true;
-    Child.userData.IgnoreRayCollisionR35 = true;
-    Child.userData.RayCollisionSolidR35 = false;
-    Child.userData.LegacyMovementCollisionDisabledR35 = true;
-  });
-}
-
-function ScanChunkDetails(Chunk) {
-  if (!Chunk?.Group) return;
-  Chunk.Group.traverse(Object => {
-    if (Object === Chunk.Group) return;
-    const Name = String(Object.name || "");
-    const Data = Object.userData || {};
-    if (
-      Data.CompactPriceAuthorityR83 === true ||
-      Data.WalkableCarpetR87 === true ||
-      Data.DecorationKind === "Rug" ||
-      Data.DecorationKind === "LargeShowroomRug" ||
-      /CompactPriceTag|FurniturePriceSign|FurnitureItemSign|PricePlacard|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet/i.test(Name)
-    ) MarkDetailNoCollision(Object);
-  });
-}
-
-function EntryObject(Entry) {
-  return Entry?.CollisionObject || Entry?.SourceModel || Entry?.Model || null;
-}
-
-function PurgeDetailEntries(Game) {
-  const Purge = Entries => {
-    if (!Array.isArray(Entries)) return;
-    for (let Index = Entries.length - 1; Index >= 0; Index -= 1) {
-      const Entry = Entries[Index];
-      const Object = EntryObject(Entry);
-      const Type = String(Entry?.Type || "");
-      if (!IsDetailNode(Object) && !/Price|Placard|ShelfStock|OnlineSurfaceDecoration|Rug|Carpet/i.test(Type)) continue;
-      Entry.Active = false;
-      Entries.splice(Index, 1);
-    }
-  };
-
-  Purge(Game.CollisionBoxes);
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) Purge(Chunk?.CollisionEntries);
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) Purge(Chunk?.CollisionEntries);
-}
-
-function MaterialVisible(Material) {
-  if (!Material || Material.visible === false) return false;
-  if (Material.transparent && Number(Material.opacity) <= 0.08) return false;
-  return true;
-}
-
-function MeshCanCollide(Object) {
-  if (!Object?.isMesh || !Object.visible || !Object.geometry?.attributes?.position) return false;
-  if (IsDetailNode(Object)) return false;
-  const Materials = Array.isArray(Object.material) ? Object.material : [Object.material];
-  return !Materials.length || Materials.some(MaterialVisible);
-}
 
 function CellKey(X, Z) {
   return `${X}:${Z}`;
@@ -134,6 +63,7 @@ function AddTriangleToGrid(Grid, Triangle, Index) {
   const MaxX = Math.floor(Math.max(Triangle.A.x, Triangle.B.x, Triangle.C.x) / CellSize);
   const MinZ = Math.floor(Math.min(Triangle.A.y, Triangle.B.y, Triangle.C.y) / CellSize);
   const MaxZ = Math.floor(Math.max(Triangle.A.y, Triangle.B.y, Triangle.C.y) / CellSize);
+
   for (let X = MinX; X <= MaxX; X += 1) {
     for (let Z = MinZ; Z <= MaxZ; Z += 1) {
       const Key = CellKey(X, Z);
@@ -143,80 +73,94 @@ function AddTriangleToGrid(Grid, Triangle, Index) {
   }
 }
 
-function ModelSignature(Model) {
-  Model.updateWorldMatrix(true, true);
-  let Signature = `${Model.matrixWorld.elements.map(Value => Number(Value).toFixed(4)).join(":")}:${Model.children.length}`;
-  Model.traverse(Object => {
-    if (!Object?.isMesh || !Object.geometry) return;
-    Object.updateWorldMatrix(true, false);
-    Signature += `|${Object.geometry.uuid}:${Object.matrixWorld.elements.map(Value => Number(Value).toFixed(4)).join(":")}`;
-  });
-  return Signature;
+function AddGeometryTriangles(Object, Matrix, Triangles, Grid, Bounds) {
+  const Geometry = Object.geometry;
+  const Position = Geometry?.attributes?.position;
+  if (!Position) return;
+
+  const Index = Geometry.index || null;
+  const TriangleCount = Index ? Math.floor(Index.count / 3) : Math.floor(Position.count / 3);
+
+  for (let TriangleIndex = 0; TriangleIndex < TriangleCount; TriangleIndex += 1) {
+    const Offset = TriangleIndex * 3;
+    const IA = Index ? Index.getX(Offset) : Offset;
+    const IB = Index ? Index.getX(Offset + 1) : Offset + 1;
+    const IC = Index ? Index.getX(Offset + 2) : Offset + 2;
+
+    ScratchA.fromBufferAttribute(Position, IA).applyMatrix4(Matrix);
+    ScratchB.fromBufferAttribute(Position, IB).applyMatrix4(Matrix);
+    ScratchC.fromBufferAttribute(Position, IC).applyMatrix4(Matrix);
+
+    ScratchAB.copy(ScratchB).sub(ScratchA);
+    ScratchAC.copy(ScratchC).sub(ScratchA);
+    ScratchNormal.crossVectors(ScratchAB, ScratchAC);
+    const NormalLength = ScratchNormal.length();
+    if (NormalLength <= 0.000001) continue;
+
+    // Horizontal surfaces belong to floor/step support, not horizontal blocking.
+    // Their vertical/oblique sides are still included, so tables, shelves, signs,
+    // counters, furniture and fixtures remain solid without the store floor
+    // turning into one giant collision wall.
+    if (Math.abs(ScratchNormal.y / NormalLength) >= HorizontalFaceCutoff) continue;
+
+    const HorizontalSpanSquared = Math.max(
+      (ScratchB.x - ScratchA.x) ** 2 + (ScratchB.z - ScratchA.z) ** 2,
+      (ScratchC.x - ScratchB.x) ** 2 + (ScratchC.z - ScratchB.z) ** 2,
+      (ScratchA.x - ScratchC.x) ** 2 + (ScratchA.z - ScratchC.z) ** 2
+    );
+    if (HorizontalSpanSquared <= 0.000001) continue;
+
+    const Triangle = {
+      A: new THREE.Vector2(ScratchA.x, ScratchA.z),
+      B: new THREE.Vector2(ScratchB.x, ScratchB.z),
+      C: new THREE.Vector2(ScratchC.x, ScratchC.z),
+      MinY: Math.min(ScratchA.y, ScratchB.y, ScratchC.y),
+      MaxY: Math.max(ScratchA.y, ScratchB.y, ScratchC.y)
+    };
+
+    const NewIndex = Triangles.length;
+    Triangles.push(Triangle);
+    Bounds.expandByPoint(ScratchA);
+    Bounds.expandByPoint(ScratchB);
+    Bounds.expandByPoint(ScratchC);
+    AddTriangleToGrid(Grid, Triangle, NewIndex);
+  }
 }
 
-function BuildShape(Model, Signature) {
-  const Cached = ShapeCache.get(Model);
-  if (Cached?.Signature === Signature) return Cached.Shape;
-
-  Model.updateWorldMatrix(true, true);
+function BuildShape(Root) {
+  Root.updateWorldMatrix(true, true);
   const Triangles = [];
   const Grid = new Map();
   const Bounds = new THREE.Box3().makeEmpty();
+  let MeshCount = 0;
+  let InstanceCount = 0;
 
-  Model.traverse(Object => {
-    if (!MeshCanCollide(Object)) return;
+  Root.traverse(Object => {
+    if (!IsPhysicalMesh(Object) || IsWalkableSurface(Object)) return;
     Object.updateWorldMatrix(true, false);
-    const Position = Object.geometry.attributes.position;
-    const Index = Object.geometry.index || null;
-    const TriangleCount = Index ? Math.floor(Index.count / 3) : Math.floor(Position.count / 3);
+    MeshCount += 1;
 
-    for (let TriangleIndex = 0; TriangleIndex < TriangleCount; TriangleIndex += 1) {
-      const Offset = TriangleIndex * 3;
-      const IA = Index ? Index.getX(Offset) : Offset;
-      const IB = Index ? Index.getX(Offset + 1) : Offset + 1;
-      const IC = Index ? Index.getX(Offset + 2) : Offset + 2;
-      ScratchA.fromBufferAttribute(Position, IA).applyMatrix4(Object.matrixWorld);
-      ScratchB.fromBufferAttribute(Position, IB).applyMatrix4(Object.matrixWorld);
-      ScratchC.fromBufferAttribute(Position, IC).applyMatrix4(Object.matrixWorld);
-
-      const ABX = ScratchB.x - ScratchA.x;
-      const ABZ = ScratchB.z - ScratchA.z;
-      const BCX = ScratchC.x - ScratchB.x;
-      const BCZ = ScratchC.z - ScratchB.z;
-      const CAX = ScratchA.x - ScratchC.x;
-      const CAZ = ScratchA.z - ScratchC.z;
-      const HorizontalSpanSquared = Math.max(
-        ABX * ABX + ABZ * ABZ,
-        BCX * BCX + BCZ * BCZ,
-        CAX * CAX + CAZ * CAZ
-      );
-      if (HorizontalSpanSquared <= 0.000004) continue;
-
-      const Triangle = {
-        A: new THREE.Vector2(ScratchA.x, ScratchA.z),
-        B: new THREE.Vector2(ScratchB.x, ScratchB.z),
-        C: new THREE.Vector2(ScratchC.x, ScratchC.z),
-        MinY: Math.min(ScratchA.y, ScratchB.y, ScratchC.y),
-        MaxY: Math.max(ScratchA.y, ScratchB.y, ScratchC.y)
-      };
-
-      const NewIndex = Triangles.length;
-      Triangles.push(Triangle);
-      Bounds.expandByPoint(ScratchA);
-      Bounds.expandByPoint(ScratchB);
-      Bounds.expandByPoint(ScratchC);
-      AddTriangleToGrid(Grid, Triangle, NewIndex);
+    if (Object.isInstancedMesh) {
+      const Count = Math.max(0, Number(Object.count) || 0);
+      for (let Index = 0; Index < Count; Index += 1) {
+        Object.getMatrixAt(Index, InstanceMatrix);
+        WorldMatrix.multiplyMatrices(Object.matrixWorld, InstanceMatrix);
+        AddGeometryTriangles(Object, WorldMatrix, Triangles, Grid, Bounds);
+        InstanceCount += 1;
+      }
+      return;
     }
+
+    AddGeometryTriangles(Object, Object.matrixWorld, Triangles, Grid, Bounds);
   });
 
-  const Shape = { Triangles, Grid, Bounds };
-  ShapeCache.set(Model, { Signature, Shape });
-  return Shape;
+  return { Triangles, Grid, Bounds, MeshCount, InstanceCount };
 }
 
 function ShapeHitsPlayer(Position, Radius, Shape) {
   if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) return false;
-  const EffectiveRadius = THREE.MathUtils.clamp(Number(Radius) || 0.255, 0.20, 0.255);
+
+  const EffectiveRadius = THREE.MathUtils.clamp(Number(Radius) || 0.255, 0.20, 0.29);
   const FeetY = Position.y - EyeHeight + 0.025;
   const HeadY = Position.y + 0.08;
 
@@ -251,89 +195,166 @@ function ShapeHitsPlayer(Position, Radius, Shape) {
   return false;
 }
 
-function PatchEntry(Entry) {
-  if (!Entry?.CoreFixR87 || Entry.Active === false) return false;
-  const Model = Entry.CollisionObject;
-  if (!Model?.isObject3D || !Model.parent || IsDetailNode(Model)) return false;
+function ChunkSignature(Chunk) {
+  const Root = Chunk?.Group;
+  if (!Root?.isObject3D) return "";
+  Root.updateWorldMatrix(true, true);
+  let Signature = `${Root.children.length}:${Chunk.Ready ? 1 : 0}:${Chunk.Cancelled ? 1 : 0}`;
+  let PhysicalCount = 0;
 
-  const Signature = ModelSignature(Model);
-  if (PatchedEntries.get(Entry) === Signature) return false;
+  Root.traverse(Object => {
+    if (!IsPhysicalMesh(Object) || IsWalkableSurface(Object)) return;
+    PhysicalCount += 1;
+    const E = Object.matrixWorld.elements;
+    Signature += `|${Object.geometry.uuid}:${Object.isInstancedMesh ? Object.count : 1}:${E[0].toFixed(3)}:${E[5].toFixed(3)}:${E[10].toFixed(3)}:${E[12].toFixed(3)}:${E[13].toFixed(3)}:${E[14].toFixed(3)}`;
+  });
 
-  const Shape = BuildShape(Model, Signature);
-  if (!Shape?.Triangles?.length || Shape.Bounds.isEmpty()) return false;
+  return `${PhysicalCount}:${Signature}`;
+}
 
-  Entry.Box = Shape.Bounds.clone();
-  Entry.OriginalBox = Shape.Bounds.clone();
-  Entry.OriginalLegacyBox = Shape.Bounds.clone();
-  Entry.TestPlayerCollision = (Position, Radius = 0.255) => ShapeHitsPlayer(Position, Radius, Shape);
-  Entry.TestCollision = (Position, Radius = 0.255) => ShapeHitsPlayer(Position, Radius, Shape);
-  Entry.PreciseGeometry = true;
-  Entry.LegacyCollisionDisabled = true;
-  Entry.VisibleCollisionR94 = true;
-  PatchedEntries.set(Entry, Signature);
+function RemoveGlobalEntry(Game, Chunk, Entry) {
+  if (!Entry) return;
+  Entry.Active = false;
+  for (let Index = Game.CollisionBoxes.length - 1; Index >= 0; Index -= 1) {
+    if (Game.CollisionBoxes[Index] === Entry) Game.CollisionBoxes.splice(Index, 1);
+  }
+  const LocalIndex = Chunk?.CollisionEntries?.indexOf?.(Entry) ?? -1;
+  if (LocalIndex >= 0) Chunk.CollisionEntries.splice(LocalIndex, 1);
+}
+
+function SyncEntryActivation(Game, Chunk, Entry) {
+  if (!Entry) return;
+  const Active = Boolean(Chunk?.Active && !Chunk?.Cancelled && Chunk?.Group?.parent);
+  Entry.Active = Active;
+  const GlobalIndex = Game.CollisionBoxes.indexOf(Entry);
+  if (Active && GlobalIndex < 0) Game.CollisionBoxes.push(Entry);
+  else if (!Active && GlobalIndex >= 0) Game.CollisionBoxes.splice(GlobalIndex, 1);
+}
+
+function InstallChunk(Game, Chunk) {
+  if (!Chunk?.Group || Chunk.Cancelled) return false;
+  Chunk.CollisionEntries ||= [];
+
+  const Signature = ChunkSignature(Chunk);
+  const Existing = ManagedChunks.get(Chunk);
+  if (Existing?.Signature === Signature) {
+    SyncEntryActivation(Game, Chunk, Existing.Entry);
+    return false;
+  }
+
+  if (Existing?.Entry) RemoveGlobalEntry(Game, Chunk, Existing.Entry);
+
+  const Shape = BuildShape(Chunk.Group);
+  if (!Shape.Triangles.length || Shape.Bounds.isEmpty()) {
+    ManagedChunks.set(Chunk, { Signature, Entry: null, Shape });
+    return false;
+  }
+
+  const StableBounds = Shape.Bounds.clone();
+  const Entry = {
+    Box: StableBounds,
+    OriginalBox: StableBounds.clone(),
+    OriginalLegacyBox: StableBounds.clone(),
+    ChunkId: Chunk.Id,
+    Type: "VisiblePhysicalWorldR95",
+    Active: false,
+    CoreFixR95: true,
+    PreciseGeometry: true,
+    LegacyCollisionDisabled: true,
+    ProceduralBodyContact: true,
+    CollisionObject: Chunk.Group,
+    VisibleMeshCountR95: Shape.MeshCount,
+    VisibleInstanceCountR95: Shape.InstanceCount,
+    VisibleTriangleCountR95: Shape.Triangles.length,
+    TestPlayerCollision(Position, Radius = 0.255) {
+      return ShapeHitsPlayer(Position, Radius, Shape);
+    },
+    TestCollision(Position, Radius = 0.255) {
+      return ShapeHitsPlayer(Position, Radius, Shape);
+    }
+  };
+
+  Chunk.CollisionEntries.push(Entry);
+  ManagedChunks.set(Chunk, { Signature, Entry, Shape });
+  SyncEntryActivation(Game, Chunk, Entry);
+
+  Chunk.Group.userData ||= {};
+  Chunk.Group.userData.VisiblePhysicalCollisionR95 = true;
+  Chunk.Group.userData.VisiblePhysicalMeshCountR95 = Shape.MeshCount;
+  Chunk.Group.userData.VisiblePhysicalTriangleCountR95 = Shape.Triangles.length;
   return true;
 }
 
-function QueueEntries(Game) {
-  for (const Entry of Game.CollisionBoxes || []) {
-    if (Entry?.CoreFixR87 && Entry.Active !== false) PendingEntries.add(Entry);
-  }
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
-    ScanChunkDetails(Chunk);
-    for (const Entry of Chunk?.CollisionEntries || []) {
-      if (Entry?.CoreFixR87 && Entry.Active !== false) PendingEntries.add(Entry);
+function CleanupRemoved(Game) {
+  for (const [Chunk, Record] of [...ManagedChunks]) {
+    if (Chunk?.Group?.parent && !Chunk.Cancelled) {
+      SyncEntryActivation(Game, Chunk, Record.Entry);
+      continue;
     }
+    RemoveGlobalEntry(Game, Chunk, Record.Entry);
+    ManagedChunks.delete(Chunk);
   }
 }
 
-function ScheduleWork() {
-  if (WorkScheduled || !PendingEntries.size) return;
+function QueueChunks(Game) {
+  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
+    if (Chunk?.Group && !Chunk.Cancelled) PendingChunks.add(Chunk);
+  }
+  for (const Chunk of Game.PreparedChunks?.values?.() || []) {
+    if (Chunk?.Group && !Chunk.Cancelled) PendingChunks.add(Chunk);
+  }
+}
+
+function ScheduleWork(Game) {
+  if (WorkScheduled || !PendingChunks.size) return;
   WorkScheduled = true;
 
   const Run = Deadline => {
     WorkScheduled = false;
     let Processed = 0;
-    const CanContinue = () => !Deadline || Deadline.didTimeout || Deadline.timeRemaining() > 3;
+    const CanContinue = () => !Deadline || Deadline.didTimeout || Deadline.timeRemaining() > 4;
 
-    for (const Entry of [...PendingEntries]) {
-      PendingEntries.delete(Entry);
-      PatchEntry(Entry);
+    for (const Chunk of [...PendingChunks]) {
+      PendingChunks.delete(Chunk);
+      InstallChunk(Game, Chunk);
       Processed += 1;
-      if (Processed >= 2 || !CanContinue()) break;
+      if (Processed >= 1 || !CanContinue()) break;
     }
 
-    if (PendingEntries.size) ScheduleWork();
+    if (PendingChunks.size) ScheduleWork(Game);
   };
 
-  if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(Run, { timeout: 180 });
-  } else {
-    setTimeout(() => Run(null), 16);
-  }
+  if (typeof requestIdleCallback === "function") requestIdleCallback(Run, { timeout: 220 });
+  else setTimeout(() => Run(null), 16);
 }
 
 function Install() {
   const Game = window.__STORE_GAME__;
-  if (!Game?.CollisionBoxes || !Game?.ActiveChunks) return false;
+  if (!Game?.CollisionBoxes || !Game?.ActiveChunks || !Game?.PreparedChunks) return false;
 
-  for (const Chunk of Game.ActiveChunks.values()) ScanChunkDetails(Chunk);
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) ScanChunkDetails(Chunk);
-  PurgeDetailEntries(Game);
-  QueueEntries(Game);
-  ScheduleWork();
+  QueueChunks(Game);
+  CleanupRemoved(Game);
+  ScheduleWork(Game);
 
   const BuildNode = document.getElementById("BuildVersion");
-  if (BuildNode) BuildNode.textContent = "BUILD V0.35.65";
+  if (BuildNode) BuildNode.textContent = "BUILD V0.35.66";
   window.__STORE_VISIBLE_COLLISION_FIX_BUILD__ = Build;
+  window.__STORE_COLLISION_POLICY_R95__ = "ALL_VISIBLE_PHYSICAL_MESHES";
   return true;
 }
 
 let Attempts = 0;
 const Start = setInterval(() => {
   Attempts += 1;
-  if (Install() || Attempts > 120) clearInterval(Start);
+  if (Install() || Attempts > 160) clearInterval(Start);
 }, 50);
 
-setInterval(Install, 700);
+const Refresh = setInterval(Install, 850);
+addEventListener("pagehide", () => {
+  clearInterval(Start);
+  clearInterval(Refresh);
+}, { once: true });
 addEventListener("store-world-buffer-progress", Install);
 addEventListener("store-settings-change", Install);
+
+export { Install, BuildShape, ShapeHitsPlayer };
