@@ -1,11 +1,11 @@
 export const STREAM_RANGE = Object.freeze({
-  // The live world is intentionally asymmetric: the player needs finished
-  // store ahead, not a second fully populated store behind them.
-  ActiveRadius: 3,
+  // Keep only the traversal neighborhood live. Two finished aisles ahead are
+  // enough to hide generation without paying to render a fifth populated aisle.
+  ActiveRadius: 2,
   ActiveBack: 1,
-  ActiveAhead: 3,
+  ActiveAhead: 2,
   PrefetchRadius: 1,
-  BootCount: 4
+  BootCount: 3
 });
 
 export function ChunkRange(CurrentIndex) {
