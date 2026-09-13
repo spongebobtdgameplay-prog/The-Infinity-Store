@@ -1,14 +1,16 @@
 import {
   THREE,
-  IsPhysicalMesh,
+  IsVisualHelper,
   IsWalkableSurface
 } from "./store-engine-core-r95.js";
 
-const Build = "V0.35.66-R95-VISIBLE-PHYSICAL-COLLISION";
+const Build = "V0.35.66-R96-STREAMED-PHYSICAL-COLLISION";
 const EyeHeight = 1.68;
-const CellSize = 0.42;
+const CellSize = 0.46;
 const VerticalSkin = 0.022;
 const HorizontalFaceCutoff = 0.90;
+const CollisionChunkRadius = 2;
+const RefreshIntervalMs = 320;
 const PendingChunks = new Set();
 const ManagedChunks = new Map();
 const ScratchA = new THREE.Vector3();
@@ -34,7 +36,12 @@ function DistanceSquaredToSegment(X, Z, A, B) {
     const PZ = Z - A.y;
     return PX * PX + PZ * PZ;
   }
-  const T = THREE.MathUtils.clamp(((X - A.x) * DX + (Z - A.y) * DZ) / LengthSquared, 0, 1);
+
+  const T = THREE.MathUtils.clamp(
+    ((X - A.x) * DX + (Z - A.y) * DZ) / LengthSquared,
+    0,
+    1
+  );
   const PX = X - (A.x + DX * T);
   const PZ = Z - (A.y + DZ * T);
   return PX * PX + PZ * PZ;
@@ -43,6 +50,7 @@ function DistanceSquaredToSegment(X, Z, A, B) {
 function PointInsideTriangle(X, Z, A, B, C) {
   const Area = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
   if (Math.abs(Area) <= 0.0000001) return false;
+
   const AB = (B.x - A.x) * (Z - A.y) - (B.y - A.y) * (X - A.x);
   const BC = (C.x - B.x) * (Z - B.y) - (C.y - B.y) * (X - B.x);
   const CA = (A.x - C.x) * (Z - C.y) - (A.y - C.y) * (X - C.x);
@@ -73,13 +81,36 @@ function AddTriangleToGrid(Grid, Triangle, Index) {
   }
 }
 
+function CollisionMesh(Object) {
+  if (!Object?.isMesh || !Object.geometry?.attributes?.position) return false;
+  if (Object.userData?.ForceNoCollisionR95 === true) return false;
+  if (Object.userData?.RenderBatchR104 === true) return false;
+  if (IsVisualHelper(Object) || IsWalkableSurface(Object)) return false;
+
+  // Static batching hides the original render meshes. Keep those hidden source
+  // meshes as the collision authority instead of turning one giant instanced
+  // render batch into a chunk-sized collision box.
+  const BatchedSource = Object.userData?.RenderBatchedSourceR104 === true;
+  if (Object.visible === false && !BatchedSource) return false;
+
+  const Materials = Array.isArray(Object.material) ? Object.material : [Object.material];
+  if (Materials.length && Materials.every(Material => {
+    if (!Material || Material.visible === false) return true;
+    return Material.transparent === true && Number(Material.opacity) <= 0.05;
+  })) return false;
+
+  return true;
+}
+
 function AddGeometryTriangles(Object, Matrix, Triangles, Grid, Bounds) {
   const Geometry = Object.geometry;
   const Position = Geometry?.attributes?.position;
   if (!Position) return;
 
   const Index = Geometry.index || null;
-  const TriangleCount = Index ? Math.floor(Index.count / 3) : Math.floor(Position.count / 3);
+  const TriangleCount = Index
+    ? Math.floor(Index.count / 3)
+    : Math.floor(Position.count / 3);
 
   for (let TriangleIndex = 0; TriangleIndex < TriangleCount; TriangleIndex += 1) {
     const Offset = TriangleIndex * 3;
@@ -97,10 +128,8 @@ function AddGeometryTriangles(Object, Matrix, Triangles, Grid, Bounds) {
     const NormalLength = ScratchNormal.length();
     if (NormalLength <= 0.000001) continue;
 
-    // Horizontal surfaces belong to floor/step support, not horizontal blocking.
-    // Their vertical/oblique sides are still included, so tables, shelves, signs,
-    // counters, furniture and fixtures remain solid without the store floor
-    // turning into one giant collision wall.
+    // Floors, tabletops and rug tops are support surfaces, not horizontal walls.
+    // Their side faces remain collidable.
     if (Math.abs(ScratchNormal.y / NormalLength) >= HorizontalFaceCutoff) continue;
 
     const HorizontalSpanSquared = Math.max(
@@ -136,7 +165,7 @@ function BuildShape(Root) {
   let InstanceCount = 0;
 
   Root.traverse(Object => {
-    if (!IsPhysicalMesh(Object) || IsWalkableSurface(Object)) return;
+    if (!CollisionMesh(Object)) return;
     Object.updateWorldMatrix(true, false);
     MeshCount += 1;
 
@@ -195,31 +224,39 @@ function ShapeHitsPlayer(Position, Radius, Shape) {
   return false;
 }
 
-function ChunkSignature(Chunk) {
-  const Root = Chunk?.Group;
-  if (!Root?.isObject3D) return "";
-  Root.updateWorldMatrix(true, true);
-  let Signature = `${Root.children.length}:${Chunk.Ready ? 1 : 0}:${Chunk.Cancelled ? 1 : 0}`;
-  let PhysicalCount = 0;
-
-  Root.traverse(Object => {
-    if (!IsPhysicalMesh(Object) || IsWalkableSurface(Object)) return;
-    PhysicalCount += 1;
-    const E = Object.matrixWorld.elements;
-    Signature += `|${Object.geometry.uuid}:${Object.isInstancedMesh ? Object.count : 1}:${E[0].toFixed(3)}:${E[5].toFixed(3)}:${E[10].toFixed(3)}:${E[12].toFixed(3)}:${E[13].toFixed(3)}:${E[14].toFixed(3)}`;
-  });
-
-  return `${PhysicalCount}:${Signature}`;
+function ChunkStamp(Chunk) {
+  const Children = Chunk?.Group?.children || [];
+  let Stamp = `${Children.length}:${Chunk.Group?.userData?.PresentationReadyR83 ? 1 : 0}`;
+  for (const Object of Children) {
+    Stamp += `|${Object.uuid}:${Object.children?.length || 0}:${Object.userData?.RenderBatchR104 ? 1 : 0}`;
+  }
+  return Stamp;
 }
 
 function RemoveGlobalEntry(Game, Chunk, Entry) {
   if (!Entry) return;
   Entry.Active = false;
+
   for (let Index = Game.CollisionBoxes.length - 1; Index >= 0; Index -= 1) {
     if (Game.CollisionBoxes[Index] === Entry) Game.CollisionBoxes.splice(Index, 1);
   }
+
   const LocalIndex = Chunk?.CollisionEntries?.indexOf?.(Entry) ?? -1;
   if (LocalIndex >= 0) Chunk.CollisionEntries.splice(LocalIndex, 1);
+}
+
+function RemoveRecord(Game, Chunk) {
+  const Record = ManagedChunks.get(Chunk);
+  if (!Record) return;
+  for (const Entry of Record.Entries || []) RemoveGlobalEntry(Game, Chunk, Entry);
+  ManagedChunks.delete(Chunk);
+}
+
+function PurgeOldR95Entries(Game, Chunk) {
+  for (const Entry of [...(Chunk?.CollisionEntries || [])]) {
+    if (!Entry?.CoreFixR95 || Entry.CoreFixR96) continue;
+    RemoveGlobalEntry(Game, Chunk, Entry);
+  }
 }
 
 function SyncEntryActivation(Game, Chunk, Entry) {
@@ -231,41 +268,24 @@ function SyncEntryActivation(Game, Chunk, Entry) {
   else if (!Active && GlobalIndex >= 0) Game.CollisionBoxes.splice(GlobalIndex, 1);
 }
 
-function InstallChunk(Game, Chunk) {
-  if (!Chunk?.Group || Chunk.Cancelled) return false;
-  Chunk.CollisionEntries ||= [];
-
-  const Signature = ChunkSignature(Chunk);
-  const Existing = ManagedChunks.get(Chunk);
-  if (Existing?.Signature === Signature) {
-    SyncEntryActivation(Game, Chunk, Existing.Entry);
-    return false;
-  }
-
-  if (Existing?.Entry) RemoveGlobalEntry(Game, Chunk, Existing.Entry);
-
-  const Shape = BuildShape(Chunk.Group);
-  if (!Shape.Triangles.length || Shape.Bounds.isEmpty()) {
-    ManagedChunks.set(Chunk, { Signature, Entry: null, Shape });
-    return false;
-  }
-
+function MakeEntry(Chunk, Root, Shape, RootIndex) {
   const StableBounds = Shape.Bounds.clone();
-  const Entry = {
+  return {
     Box: StableBounds,
     OriginalBox: StableBounds.clone(),
     OriginalLegacyBox: StableBounds.clone(),
     ChunkId: Chunk.Id,
-    Type: "VisiblePhysicalWorldR95",
+    Type: `VisiblePhysicalObjectR96:${String(Root.name || RootIndex)}`,
     Active: false,
     CoreFixR95: true,
+    CoreFixR96: true,
     PreciseGeometry: true,
     LegacyCollisionDisabled: true,
     ProceduralBodyContact: true,
-    CollisionObject: Chunk.Group,
-    VisibleMeshCountR95: Shape.MeshCount,
-    VisibleInstanceCountR95: Shape.InstanceCount,
-    VisibleTriangleCountR95: Shape.Triangles.length,
+    CollisionObject: Root,
+    VisibleMeshCountR96: Shape.MeshCount,
+    VisibleInstanceCountR96: Shape.InstanceCount,
+    VisibleTriangleCountR96: Shape.Triangles.length,
     TestPlayerCollision(Position, Radius = 0.255) {
       return ShapeHitsPlayer(Position, Radius, Shape);
     },
@@ -273,35 +293,85 @@ function InstallChunk(Game, Chunk) {
       return ShapeHitsPlayer(Position, Radius, Shape);
     }
   };
+}
 
-  Chunk.CollisionEntries.push(Entry);
-  ManagedChunks.set(Chunk, { Signature, Entry, Shape });
-  SyncEntryActivation(Game, Chunk, Entry);
+function InstallChunk(Game, Chunk) {
+  if (!Chunk?.Group || Chunk.Cancelled || !Chunk.Active) return false;
+  if (!Chunk.Group.userData?.PresentationReadyR83) return false;
+
+  Chunk.CollisionEntries ||= [];
+  PurgeOldR95Entries(Game, Chunk);
+
+  const Stamp = ChunkStamp(Chunk);
+  const Existing = ManagedChunks.get(Chunk);
+  if (Existing?.Stamp === Stamp) {
+    for (const Entry of Existing.Entries) SyncEntryActivation(Game, Chunk, Entry);
+    return false;
+  }
+
+  if (Existing) RemoveRecord(Game, Chunk);
+
+  const Entries = [];
+  const Children = Chunk.Group.children || [];
+
+  for (let RootIndex = 0; RootIndex < Children.length; RootIndex += 1) {
+    const Root = Children[RootIndex];
+    if (!Root?.isObject3D || IsWalkableSurface(Root)) continue;
+    if (Root.userData?.RenderBatchR104 === true) continue;
+
+    const Shape = BuildShape(Root);
+    if (!Shape.Triangles.length || Shape.Bounds.isEmpty()) continue;
+
+    const Entry = MakeEntry(Chunk, Root, Shape, RootIndex);
+    Chunk.CollisionEntries.push(Entry);
+    Entries.push(Entry);
+    SyncEntryActivation(Game, Chunk, Entry);
+  }
+
+  ManagedChunks.set(Chunk, { Stamp, Entries });
 
   Chunk.Group.userData ||= {};
-  Chunk.Group.userData.VisiblePhysicalCollisionR95 = true;
-  Chunk.Group.userData.VisiblePhysicalMeshCountR95 = Shape.MeshCount;
-  Chunk.Group.userData.VisiblePhysicalTriangleCountR95 = Shape.Triangles.length;
+  Chunk.Group.userData.VisiblePhysicalCollisionR96 = true;
+  Chunk.Group.userData.VisiblePhysicalObjectCountR96 = Entries.length;
+  Chunk.Group.userData.VisiblePhysicalTriangleCountR96 = Entries.reduce(
+    (Total, Entry) => Total + (Number(Entry.VisibleTriangleCountR96) || 0),
+    0
+  );
   return true;
+}
+
+function CurrentChunkIndex(Game) {
+  if (!Game?.Camera || typeof Game.ChunkIndexForZ !== "function") return 0;
+  return Math.max(0, Game.ChunkIndexForZ(Game.Camera.position.z));
+}
+
+function QueueNearChunks(Game) {
+  const CurrentIndex = CurrentChunkIndex(Game);
+
+  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
+    if (!Chunk?.Group || Chunk.Cancelled || !Chunk.Active) continue;
+    const Distance = Math.abs((Number(Chunk.Index) || 0) - CurrentIndex);
+    if (Distance <= CollisionChunkRadius) PendingChunks.add(Chunk);
+  }
+
+  // Precise triangle collision is needed around the player, not for every
+  // prefetched aisle in memory. Far aisles keep their normal lightweight
+  // collision until they enter this two-chunk safety buffer.
+  for (const [Chunk] of [...ManagedChunks]) {
+    const Distance = Math.abs((Number(Chunk?.Index) || 0) - CurrentIndex);
+    if (Chunk?.Cancelled || !Chunk?.Active || Distance > CollisionChunkRadius) {
+      RemoveRecord(Game, Chunk);
+    }
+  }
 }
 
 function CleanupRemoved(Game) {
   for (const [Chunk, Record] of [...ManagedChunks]) {
-    if (Chunk?.Group?.parent && !Chunk.Cancelled) {
-      SyncEntryActivation(Game, Chunk, Record.Entry);
+    if (Chunk?.Active && Chunk?.Group?.parent && !Chunk.Cancelled) {
+      for (const Entry of Record.Entries || []) SyncEntryActivation(Game, Chunk, Entry);
       continue;
     }
-    RemoveGlobalEntry(Game, Chunk, Record.Entry);
-    ManagedChunks.delete(Chunk);
-  }
-}
-
-function QueueChunks(Game) {
-  for (const Chunk of Game.ActiveChunks?.values?.() || []) {
-    if (Chunk?.Group && !Chunk.Cancelled) PendingChunks.add(Chunk);
-  }
-  for (const Chunk of Game.PreparedChunks?.values?.() || []) {
-    if (Chunk?.Group && !Chunk.Cancelled) PendingChunks.add(Chunk);
+    RemoveRecord(Game, Chunk);
   }
 }
 
@@ -312,7 +382,7 @@ function ScheduleWork(Game) {
   const Run = Deadline => {
     WorkScheduled = false;
     let Processed = 0;
-    const CanContinue = () => !Deadline || Deadline.didTimeout || Deadline.timeRemaining() > 4;
+    const CanContinue = () => !Deadline || Deadline.didTimeout || Deadline.timeRemaining() > 5;
 
     for (const Chunk of [...PendingChunks]) {
       PendingChunks.delete(Chunk);
@@ -324,22 +394,31 @@ function ScheduleWork(Game) {
     if (PendingChunks.size) ScheduleWork(Game);
   };
 
-  if (typeof requestIdleCallback === "function") requestIdleCallback(Run, { timeout: 220 });
-  else setTimeout(() => Run(null), 16);
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(Run, { timeout: 300 });
+  } else {
+    setTimeout(() => Run(null), 18);
+  }
 }
 
 function Install() {
   const Game = window.__STORE_GAME__;
-  if (!Game?.CollisionBoxes || !Game?.ActiveChunks || !Game?.PreparedChunks) return false;
+  if (!Game?.CollisionBoxes || !Game?.ActiveChunks || !Game?.Camera) return false;
 
-  QueueChunks(Game);
+  QueueNearChunks(Game);
   CleanupRemoved(Game);
   ScheduleWork(Game);
 
   const BuildNode = document.getElementById("BuildVersion");
-  if (BuildNode) BuildNode.textContent = "BUILD V0.35.66";
+  if (BuildNode) BuildNode.textContent = "BUILD V0.35.66 • R96";
+
   window.__STORE_VISIBLE_COLLISION_FIX_BUILD__ = Build;
-  window.__STORE_COLLISION_POLICY_R95__ = "ALL_VISIBLE_PHYSICAL_MESHES";
+  window.__STORE_COLLISION_POLICY_R96__ = Object.freeze({
+    Mode: "STREAMED_VISIBLE_PHYSICAL_OBJECTS",
+    CollisionChunkRadius,
+    PreparedChunkTriangleCollision: false,
+    ChunkAggregateCollision: false
+  });
   return true;
 }
 
@@ -349,7 +428,7 @@ const Start = setInterval(() => {
   if (Install() || Attempts > 160) clearInterval(Start);
 }, 50);
 
-const Refresh = setInterval(Install, 850);
+const Refresh = setInterval(Install, RefreshIntervalMs);
 addEventListener("pagehide", () => {
   clearInterval(Start);
   clearInterval(Refresh);
