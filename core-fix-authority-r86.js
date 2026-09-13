@@ -1,3 +1,4 @@
+import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
 
 const Game = window.__STORE_GAME__;
@@ -6,7 +7,9 @@ if (!Game?.Scene || !Game?.CollisionBoxes || !Game?.ActiveChunks || !Game?.Prepa
 }
 
 const SurfaceStep = window.__STORE_SURFACE_STEP_ANIMATION_R87__ || null;
-const EngineCollision = window.__STORE_ENGINE__?.Collision || null;
+const Engine = window.__STORE_ENGINE__ || null;
+const EngineCollision = Engine?.Collision || null;
+const EngineRender = Engine?.Render || null;
 const ProcessedChunks = new WeakMap();
 const RemovedGeometryNames = new Set(["Window_Large1"]);
 
@@ -49,10 +52,12 @@ function RemoveEntry(Chunk, Entry) {
 
 function PurgeLegacyCollision(Chunk) {
   for (const Entry of [...(Chunk.CollisionEntries || [])]) {
-    // R44 was only a rectangular placement footprint. R99 replaces it with
-    // engine-owned compound mesh collision. Old R87 triangle entries are also
-    // unnecessary and expensive to generate/retain.
-    const LegacyGenerated = Boolean(Entry?.SpawnCollisionR44 || Entry?.CoreFixR87 || Entry?.CoreFixR88);
+    const LegacyGenerated = Boolean(
+      Entry?.SpawnCollisionR44 ||
+      Entry?.CoreFixR87 ||
+      Entry?.CoreFixR88 ||
+      (Entry?.EngineCompoundR99 && !Entry?.EngineCompoundR100)
+    );
     const DecorativeWindow = /Window_Large1/i.test(String(Entry?.Type || ""));
     if (LegacyGenerated || DecorativeWindow || IsWalkableEntry(Entry)) RemoveEntry(Chunk, Entry);
   }
@@ -157,14 +162,19 @@ function InstallEngineCollision(Chunk) {
   return EngineCollision.EnsureChunkCollision(
     Chunk,
     Game.CollisionBoxes,
-    { EyeHeight: 1.68, MaximumPieces: 96 }
+    {
+      EyeHeight: 1.68,
+      MaximumPieces: 96,
+      CollisionGridAxis: 4,
+      CollisionCellPadding: 0.004
+    }
   );
 }
 
 function ProcessInternal(Chunk, Force = false) {
   if (!Chunk?.Ready || Chunk.Cancelled || !Chunk.Group) return 0;
   const Before = ChunkSignature(Chunk);
-  if (!Force && ProcessedChunks.get(Chunk) === Before && Chunk.Group.userData?.CoreFixR99) return 0;
+  if (!Force && ProcessedChunks.get(Chunk) === Before && Chunk.Group.userData?.CoreFixR100) return 0;
 
   RemoveDecorativeWindows(Chunk);
   PurgeLegacyCollision(Chunk);
@@ -172,17 +182,27 @@ function ProcessInternal(Chunk, Force = false) {
   FixRetailColors(Chunk);
   const Added = InstallEngineCollision(Chunk);
 
+  Chunk.Group.userData.CoreFixR100 = true;
   Chunk.Group.userData.CoreFixR99 = true;
   Chunk.Group.userData.CoreFixR88 = true;
   Chunk.Group.userData.CoreFixR87 = true;
   Chunk.Group.userData.CoreFixR86 = true;
-  Chunk.Group.userData.EngineCollisionCountR99 = Added;
+  Chunk.Group.userData.EngineCollisionCountR100 = Added;
   ProcessedChunks.set(Chunk, ChunkSignature(Chunk));
   return Added;
 }
 
+async function InstallEngineRenderBatch(Chunk) {
+  if (!EngineRender?.OptimizeChunkStaticRender || !Chunk?.Group || Chunk.Cancelled) return null;
+  return EngineRender.OptimizeChunkStaticRender(Chunk, {
+    Yield: () => WaitForWorkSlice(4, 900)
+  });
+}
+
 export async function ProcessChunkAsync(Chunk, Force = false) {
-  return ProcessInternal(Chunk, Force);
+  const Added = ProcessInternal(Chunk, Force);
+  await InstallEngineRenderBatch(Chunk);
+  return Added;
 }
 
 export function ProcessChunk(Chunk, Force = false) {
@@ -204,4 +224,4 @@ ProcessAll();
 
 window.__STORE_CORE_FIX_R86__ = { ProcessAll, ProcessChunk, ProcessChunkAsync };
 window.__STORE_CORE_FIX_R87__ = window.__STORE_CORE_FIX_R86__;
-window.__STORE_CORE_FIX_BUILD__ = "V0.35.69-R99-ENGINE-COLLISION";
+window.__STORE_CORE_FIX_BUILD__ = "V0.35.70-R100-ENGINE-COLLISION-RENDER";
