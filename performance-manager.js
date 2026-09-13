@@ -40,9 +40,9 @@ function Game() {
 }
 
 function QualityProfile() {
-  if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1 };
-  if (Settings.Graphics === "high") return { PixelRatio: 1.35, PointLights: 4, Anisotropy: 4 };
-  return { PixelRatio: 1.15, PointLights: 3, Anisotropy: 2 };
+  if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1, MinScale: 0.68 };
+  if (Settings.Graphics === "high") return { PixelRatio: 1.30, PointLights: 4, Anisotropy: 4, MinScale: 0.78 };
+  return { PixelRatio: 1.10, PointLights: 3, Anisotropy: 2, MinScale: 0.70 };
 }
 
 const PerfState = {
@@ -50,7 +50,11 @@ const PerfState = {
   Height: 0,
   Ratio: -1,
   Quality: "",
-  TextureStamp: ""
+  TextureStamp: "",
+  AdaptiveScale: 1,
+  PressureSamples: 0,
+  RecoverySamples: 0,
+  LastAdaptiveAt: -Infinity
 };
 
 function ApplyCamera() {
@@ -78,7 +82,7 @@ function ApplyRenderer() {
   if (!CurrentGame?.Renderer) return;
   const Profile = QualityProfile();
   const DeviceRatio = Math.max(1, Number(devicePixelRatio) || 1);
-  const Ratio = Math.min(DeviceRatio, Profile.PixelRatio);
+  const Ratio = Math.max(0.55, Math.min(DeviceRatio, Profile.PixelRatio) * PerfState.AdaptiveScale);
   if (
     PerfState.Width === innerWidth &&
     PerfState.Height === innerHeight &&
@@ -129,9 +133,7 @@ function ApplyTextureBudgetToRoot(Root) {
 function ApplyTextureBudgetToChunk(Chunk) {
   if (!Chunk || Chunk.Cancelled) return;
   ApplyTextureBudgetToRoot(Chunk.Group);
-  for (const Object of Chunk.ExternalObjects || []) {
-    ApplyTextureBudgetToRoot(Object);
-  }
+  for (const Object of Chunk.ExternalObjects || []) ApplyTextureBudgetToRoot(Object);
 }
 
 function ApplyTextureBudget() {
@@ -149,36 +151,26 @@ function CullPointLights() {
 
   const Lights = [];
   const Seen = new Set();
-
   for (const Chunk of CurrentGame.ActiveChunks?.values?.() || []) {
     for (const Object of Chunk?.Lights || []) {
       if (!Object?.isPointLight || Seen.has(Object)) continue;
       Seen.add(Object);
       const Position = Object.userData.R43LightWorld ||= new THREE.Vector3();
       Object.getWorldPosition(Position);
-      Lights.push({
-        Object,
-        Distance: Position.distanceToSquared(CurrentGame.Camera.position)
-      });
+      Lights.push({ Object, Distance: Position.distanceToSquared(CurrentGame.Camera.position) });
     }
   }
-
   for (const Object of CurrentGame.Scene.children || []) {
     if (!Object?.isPointLight || Seen.has(Object)) continue;
     Seen.add(Object);
     const Position = Object.userData.R43LightWorld ||= new THREE.Vector3();
     Object.getWorldPosition(Position);
-    Lights.push({
-      Object,
-      Distance: Position.distanceToSquared(CurrentGame.Camera.position)
-    });
+    Lights.push({ Object, Distance: Position.distanceToSquared(CurrentGame.Camera.position) });
   }
 
   Lights.sort((A, B) => A.Distance - B.Distance);
   const Limit = QualityProfile().PointLights;
-  for (let Index = 0; Index < Lights.length; Index += 1) {
-    Lights[Index].Object.visible = Index < Limit;
-  }
+  for (let Index = 0; Index < Lights.length; Index += 1) Lights[Index].Object.visible = Index < Limit;
 }
 
 function ApplyPerformance() {
@@ -186,6 +178,43 @@ function ApplyPerformance() {
   ApplyRenderer();
   ApplyTextureBudget();
   CullPointLights();
+}
+
+function UpdateAdaptiveResolution(Fps, P95, Calls, Now) {
+  if (window.__STORE_GAMEPLAY_STARTED__ !== true) return;
+  const Profile = QualityProfile();
+  const UnderPressure = Fps < 53 || P95 > 22 || (Calls > 360 && Fps < 57);
+  const Recovering = Fps >= 59 && P95 < 18.5 && Calls < 430;
+
+  if (UnderPressure) {
+    PerfState.PressureSamples += 1;
+    PerfState.RecoverySamples = 0;
+  } else if (Recovering) {
+    PerfState.RecoverySamples += 1;
+    PerfState.PressureSamples = Math.max(0, PerfState.PressureSamples - 1);
+  } else {
+    PerfState.PressureSamples = Math.max(0, PerfState.PressureSamples - 1);
+    PerfState.RecoverySamples = 0;
+  }
+
+  if (Now - PerfState.LastAdaptiveAt < 1200) return;
+
+  let NextScale = PerfState.AdaptiveScale;
+  if (PerfState.PressureSamples >= 2 && NextScale > Profile.MinScale + 0.001) {
+    NextScale = Math.max(Profile.MinScale, NextScale - 0.08);
+    PerfState.PressureSamples = 0;
+    PerfState.RecoverySamples = 0;
+  } else if (PerfState.RecoverySamples >= 5 && NextScale < 0.999) {
+    NextScale = Math.min(1, NextScale + 0.035);
+    PerfState.PressureSamples = 0;
+    PerfState.RecoverySamples = 0;
+  }
+
+  if (Math.abs(NextScale - PerfState.AdaptiveScale) < 0.001) return;
+  PerfState.AdaptiveScale = NextScale;
+  PerfState.LastAdaptiveAt = Now;
+  PerfState.Width = 0;
+  ApplyRenderer();
 }
 
 let Ambient = null;
@@ -308,8 +337,17 @@ function BuildSettings() {
     Graphics.appendChild(Option);
   }
   Graphics.value = Settings.Graphics;
-  Graphics.addEventListener("change", () => { Settings.Graphics = Graphics.value; PerfState.TextureStamp = ""; PerfState.Quality = ""; SaveSettings(); ApplyPerformance(); });
-  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Keeps native screen resolution and changes light and texture-filtering cost only."));
+  Graphics.addEventListener("change", () => {
+    Settings.Graphics = Graphics.value;
+    PerfState.TextureStamp = "";
+    PerfState.Quality = "";
+    PerfState.AdaptiveScale = 1;
+    PerfState.PressureSamples = 0;
+    PerfState.RecoverySamples = 0;
+    SaveSettings();
+    ApplyPerformance();
+  });
+  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Changes render resolution, light count and texture filtering to hold frame rate."));
 
   const AmbientControl = RangeControl(0, 1, 0.01, Settings.AmbientVolume, Value => `${Math.round(Value * 100)}%`, Value => { Settings.AmbientVolume = Value; SaveSettings(); UpdateAmbient(); });
   Body.appendChild(SettingRow("STORE AMBIENT", AmbientControl, "HVAC/electrical room tone."));
@@ -323,7 +361,7 @@ function BuildSettings() {
   Toggle.checked = Settings.ShowFps;
   Toggle.addEventListener("change", () => { Settings.ShowFps = Toggle.checked; ToggleText.textContent = Settings.ShowFps ? "VISIBLE" : "HIDDEN"; SaveSettings(); });
   ToggleWrap.append(ToggleText, Toggle);
-  Body.appendChild(SettingRow("FPS COUNTER", { Element: ToggleWrap }, "Shows measured FPS and average frame time."));
+  Body.appendChild(SettingRow("FPS COUNTER", { Element: ToggleWrap }, "Shows measured FPS, frame time, draws and adaptive resolution."));
 
   const Foot = document.createElement("div");
   Foot.className = "R43SettingsFoot";
@@ -390,7 +428,7 @@ FpsCounter.id = "FpsCounterR43";
 FpsCounter.innerHTML = `FPS <strong>--</strong><span>-- ms</span>`;
 document.body.appendChild(FpsCounter);
 FpsCounter.style.flexWrap = "wrap";
-FpsCounter.style.maxWidth = "290px";
+FpsCounter.style.maxWidth = "310px";
 const Samples = [];
 document.addEventListener("visibilitychange", () => { Samples.length = 0; LastFrame = performance.now(); });
 let LastFrame = performance.now();
@@ -410,7 +448,9 @@ function FpsFrame(Now) {
     const Sorted = [...Samples].sort((A, B) => A - B);
     const P95 = Sorted[Math.floor((Sorted.length - 1) * 0.95)];
     const Calls = Game()?.Renderer?.info?.render?.calls ?? 0;
-    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span><small style="display:block;flex-basis:100%;font-size:10px;margin-top:5px">95% frame ${P95.toFixed(1)} ms · ${Calls} draws</small>`;
+    UpdateAdaptiveResolution(Fps, P95, Calls, Now);
+    const Resolution = Math.round(PerfState.AdaptiveScale * 100);
+    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span><small style="display:block;flex-basis:100%;font-size:10px;margin-top:5px">95% frame ${P95.toFixed(1)} ms · ${Calls} draws · ${Resolution}% res</small>`;
   }
   FpsCounter.classList.toggle("R43Hidden", !Settings.ShowFps);
   requestAnimationFrame(FpsFrame);
@@ -425,5 +465,5 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.61-NATIVE-RESOLUTION";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.61-NATIVE-RESOLUTION";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.70-R100-ADAPTIVE-RESOLUTION";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.70-R100-ADAPTIVE-RESOLUTION";
