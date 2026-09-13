@@ -5,18 +5,22 @@ if (!Collision) throw new Error("Collision utility must load before procedural p
 
 const EyeHeight = 1.68;
 const DefaultRadius = 0.255;
-const Skin = 0.006;
+const Skin = 0.012;
 const MaxStepHeight = 0.30;
 const StepClearance = 0.018;
 const SurfaceBlendWidth = 0.115;
 const CurbBodyProbeRadius = 0.14;
 const StepUpSpeed = 4.20;
 const StepDownSpeed = 3.35;
-const MaxSweepSteps = 56;
-const BinarySteps = 18;
+const MaxSlides = 6;
+const MaxSweepSteps = 18;
+const BinarySteps = 8;
+const ContactMergeDot = 0.965;
 
 const WalkableSurfaces = new Map();
-const StrictCollisionEntries = [];
+const NearbyEntries = [];
+const ContactNormals = [];
+const ContactEntries = [];
 
 let VerticalStateInitialized = false;
 let AuthoritativeFloorY = 0;
@@ -27,11 +31,13 @@ const Scratch = {
   Desired: new THREE.Vector3(),
   DesiredDirection: new THREE.Vector3(),
   Start: new THREE.Vector3(),
-  RaisedStart: new THREE.Vector3(),
-  Tangent: new THREE.Vector3(),
+  Position: new THREE.Vector3(),
   Remaining: new THREE.Vector3(),
-  Final: new THREE.Vector3(),
-  Candidate: new THREE.Vector3()
+  Leftover: new THREE.Vector3(),
+  Probe: new THREE.Vector3(),
+  Normal: new THREE.Vector3(),
+  NormalSum: new THREE.Vector3(),
+  Closest: new THREE.Vector3()
 };
 
 function FiniteBounds(Bounds) {
@@ -45,7 +51,7 @@ function FiniteBounds(Bounds) {
 }
 
 function EntryBounds(Entry) {
-  return Entry?.OriginalStructureBox || Entry?.OriginalBox || Entry?.Box || Entry || null;
+  return Collision.EntryBounds?.(Entry) || Entry?.OriginalStructureBox || Entry?.OriginalBox || Entry?.Box || Entry || null;
 }
 
 function IsStructure(Entry) {
@@ -126,13 +132,6 @@ function RefreshWalkableSurfaces() {
   }
 }
 
-function PointOverBounds(Position, Bounds, Inset = 0) {
-  return Position.x >= Bounds.min.x + Inset &&
-    Position.x <= Bounds.max.x - Inset &&
-    Position.z >= Bounds.min.z + Inset &&
-    Position.z <= Bounds.max.z - Inset;
-}
-
 function SmoothStep01(Value) {
   const T = THREE.MathUtils.clamp(Value, 0, 1);
   return T * T * (3 - 2 * T);
@@ -154,7 +153,6 @@ function WalkableSupport(Position, Bounds, ProbeRadius = 0) {
 
 function WalkableSurfaceHeight(Position, CurrentFeetY = 0) {
   let Height = 0;
-
   for (const Record of WalkableSurfaces.values()) {
     const Bounds = Record.Bounds;
     if (!FiniteBounds(Bounds)) continue;
@@ -164,34 +162,11 @@ function WalkableSurfaceHeight(Position, CurrentFeetY = 0) {
     if (Rise > MaxStepHeight + StepClearance) continue;
     Height = Math.max(Height, Bounds.max.y * Support);
   }
-
   return Height;
 }
 
-function WalkableEntryHeight(Position, Entries, CurrentFeetY = 0) {
-  let Height = 0;
-
-  for (const Entry of Entries || []) {
-    if (!Entry || IsStructure(Entry)) continue;
-    const Bounds = EntryBounds(Entry);
-    if (!FiniteBounds(Bounds)) continue;
-    const ExplicitWalkable = IsExplicitWalkable(Entry);
-    if (!ExplicitWalkable && !PointOverBounds(Position, Bounds, 0)) continue;
-    const Support = ExplicitWalkable ? WalkableSupport(Position, Bounds, CurbBodyProbeRadius) : 1;
-    if (Support <= 0.001) continue;
-    const Rise = Bounds.max.y - CurrentFeetY;
-    const HeightSize = Bounds.max.y - Bounds.min.y;
-    if (Rise < -0.035 || Rise > MaxStepHeight + StepClearance) continue;
-    if (!ExplicitWalkable && HeightSize > MaxStepHeight + 0.16) continue;
-    Height = Math.max(Height, Bounds.max.y * Support);
-  }
-
-  return Height;
-}
-
-function SurfaceHeight(Position, Entries, CurrentFeetY = 0) {
-  void Entries;
-  return Math.max(0, WalkableSurfaceHeight(Position, CurrentFeetY));
+function SurfaceHeight(Position) {
+  return Math.max(0, WalkableSurfaceHeight(Position, AuthoritativeFloorY));
 }
 
 function CameraBasis(Camera) {
@@ -214,11 +189,15 @@ function MoveToward(Current, Target, MaximumDelta) {
   return Current;
 }
 
-function CollectStrictCollisionEntries(Start, Desired, Radius, Entries) {
-  StrictCollisionEntries.length = 0;
-  if (!Array.isArray(Entries) || !Entries.length) return StrictCollisionEntries;
+function EffectiveCollisionEntries(Entries) {
+  if (Array.isArray(Entries)) return Entries;
+  const GlobalEntries = window.__STORE_COLLISION_BOXES__;
+  return Array.isArray(GlobalEntries) ? GlobalEntries : [];
+}
 
-  const Padding = Math.max(0.10, Radius + 0.08);
+function CollectNearbyEntries(Start, Desired, Radius, Entries) {
+  NearbyEntries.length = 0;
+  const Padding = Math.max(0.12, Radius + Skin + 0.08);
   const EndX = Start.x + Desired.x;
   const EndZ = Start.z + Desired.z;
   const MinX = Math.min(Start.x, EndX) - Padding;
@@ -226,125 +205,193 @@ function CollectStrictCollisionEntries(Start, Desired, Radius, Entries) {
   const MinZ = Math.min(Start.z, EndZ) - Padding;
   const MaxZ = Math.max(Start.z, EndZ) + Padding;
 
-  for (const Entry of Entries) {
-    if (!Entry || Entry.Active === false) continue;
-    const Bounds = Collision.EntryBounds?.(Entry);
-    if (!Bounds?.min || !Bounds?.max) continue;
+  for (const Entry of Entries || []) {
+    if (!Entry || Entry.Active === false || IsExplicitWalkable(Entry)) continue;
+    const Bounds = EntryBounds(Entry);
+    if (!FiniteBounds(Bounds)) continue;
     if (Bounds.max.x < MinX || Bounds.min.x > MaxX) continue;
     if (Bounds.max.z < MinZ || Bounds.min.z > MaxZ) continue;
-    StrictCollisionEntries.push(Entry);
+    NearbyEntries.push(Entry);
+  }
+  return NearbyEntries;
+}
+
+function EntryNormal(Entry, Position, Motion, Target) {
+  const Bounds = EntryBounds(Entry);
+  if (!FiniteBounds(Bounds)) return false;
+
+  const MinX = Bounds.min.x - DefaultRadius;
+  const MaxX = Bounds.max.x + DefaultRadius;
+  const MinZ = Bounds.min.z - DefaultRadius;
+  const MaxZ = Bounds.max.z + DefaultRadius;
+
+  if (Position.x >= MinX && Position.x <= MaxX && Position.z >= MinZ && Position.z <= MaxZ) {
+    const Left = Position.x - MinX;
+    const Right = MaxX - Position.x;
+    const Back = Position.z - MinZ;
+    const Front = MaxZ - Position.z;
+    const Minimum = Math.min(Left, Right, Back, Front);
+    if (Minimum === Left) Target.set(-1, 0, 0);
+    else if (Minimum === Right) Target.set(1, 0, 0);
+    else if (Minimum === Back) Target.set(0, 0, -1);
+    else Target.set(0, 0, 1);
+  } else {
+    Scratch.Closest.set(
+      THREE.MathUtils.clamp(Position.x, Bounds.min.x, Bounds.max.x),
+      Position.y,
+      THREE.MathUtils.clamp(Position.z, Bounds.min.z, Bounds.max.z)
+    );
+    Target.copy(Position).sub(Scratch.Closest);
+    Target.y = 0;
+    if (Target.lengthSq() <= 0.000001) return false;
+    Target.normalize();
   }
 
-  return StrictCollisionEntries;
+  if (Motion?.lengthSq?.() > 0.000001 && Motion.dot(Target) > 0) Target.negate();
+  return true;
 }
 
-function ResolveEntryMove(Start, Desired, Radius, Entries) {
-  if (typeof Collision.ResolveHorizontalMove !== "function") return null;
-  const NearbyEntries = CollectStrictCollisionEntries(Start, Desired, Radius, Entries);
-  if (!NearbyEntries.length) return null;
+function AddContactNormal(Normal, Entry) {
+  if (!Normal?.isVector3 || Normal.lengthSq() <= 0.25) return;
+  Normal.normalize();
+  for (const Existing of ContactNormals) {
+    if (Existing.dot(Normal) >= ContactMergeDot) return;
+  }
+  ContactNormals.push(Normal.clone());
+  ContactEntries.push(Entry || null);
+}
 
-  return Collision.ResolveHorizontalMove(
-    Start,
-    Desired,
-    Radius,
-    NearbyEntries,
-    {
-      Skin: 0.012,
-      AllowSlide: true,
-      MaxIterations: 5,
-      MaxSweepSteps: 72,
-      BinarySteps: 20,
-      SlideIntentThreshold: 0.06
+function BuildContactManifold(Position, Radius, Motion, Entries) {
+  ContactNormals.length = 0;
+  ContactEntries.length = 0;
+
+  for (const Entry of Entries) {
+    let Touching = false;
+    try {
+      Touching = Collision.EntryTouchesCircle?.(Entry, Position, Radius + Skin * 0.35) === true;
+    } catch {}
+    if (!Touching) continue;
+    if (EntryNormal(Entry, Position, Motion, Scratch.Normal)) AddContactNormal(Scratch.Normal, Entry);
+  }
+
+  if (!ContactNormals.length && Motion.lengthSq() > 0.000001) {
+    Scratch.Normal.copy(Motion).normalize().negate();
+    AddContactNormal(Scratch.Normal, null);
+  }
+
+  return ContactNormals;
+}
+
+function ProjectAgainstContacts(Vector, Normals) {
+  // Sequential projection is the same basic idea used by move-and-slide style
+  // character controllers. Repeating the pass handles corners/two-wall cases.
+  for (let Pass = 0; Pass < 2; Pass += 1) {
+    let Changed = false;
+    for (const Normal of Normals) {
+      const Into = Vector.dot(Normal);
+      if (Into >= 0) continue;
+      Vector.addScaledVector(Normal, -Into);
+      Changed = true;
     }
-  );
+    if (!Changed) break;
+  }
+  return Vector;
 }
 
-function EffectiveCollisionEntries(Entries) {
-  if (Array.isArray(Entries)) return Entries;
-  const GlobalEntries = window.__STORE_COLLISION_BOXES__;
-  return Array.isArray(GlobalEntries) ? GlobalEntries : [];
-}
+function ResolveCharacterMove(Start, Desired, Radius, Entries) {
+  Scratch.Position.copy(Start);
+  Scratch.Remaining.copy(Desired);
+  Scratch.Remaining.y = 0;
 
-function CurrentChunkExactCollisionReady(Start, Entries) {
-  const Game = window.__STORE_GAME__;
-  if (!Game?.ActiveChunks || typeof Game.ChunkIndexForZ !== "function") return false;
+  const Nearby = CollectNearbyEntries(Start, Desired, Radius, Entries);
+  if (!Nearby.length || Scratch.Remaining.lengthSq() <= 0.00000001) {
+    Scratch.Position.add(Scratch.Remaining);
+    return {
+      Position: Scratch.Position.clone(),
+      Resolved: Scratch.Remaining.clone(),
+      Hit: false,
+      Sliding: false,
+      Entry: null,
+      Normal: new THREE.Vector3(),
+      ContactCount: 0
+    };
+  }
 
-  const ChunkIndex = Game.ChunkIndexForZ(Start.z);
-  const Chunk = Game.ActiveChunks.get(ChunkIndex);
-  if (!Chunk?.Group?.userData?.CoreFixR87) return false;
+  let Hit = false;
+  let Sliding = false;
+  let LastEntry = null;
+  const LastNormal = new THREE.Vector3();
+  let ContactCount = 0;
 
-  return Entries.some(Entry =>
-    Entry?.Active !== false &&
-    Entry.ChunkId === Chunk.Id &&
-    Entry.CoreFixR87 === true
-  );
-}
+  for (let Iteration = 0; Iteration < MaxSlides; Iteration += 1) {
+    const RemainingLength = Scratch.Remaining.length();
+    if (RemainingLength <= 0.00001) break;
 
-function ResolveWithSlide(Start, Desired, Radius, Entries) {
-  const Scene = window.__STORE_GAME__?.Scene || null;
-  const CollisionEntries = EffectiveCollisionEntries(Entries);
-  const EntryFirst = ResolveEntryMove(Start, Desired, Radius, CollisionEntries);
-  const EntryDelta = EntryFirst?.Resolved?.isVector3 ? EntryFirst.Resolved : Desired;
-
-  let RayResult = {
-    Position: Start.clone().add(EntryDelta),
-    Resolved: EntryDelta.clone(),
-    Hit: false,
-    Normal: new THREE.Vector3(),
-    Entry: null
-  };
-
-  const ExactCollisionAuthorityReady = CurrentChunkExactCollisionReady(
-    Start,
-    CollisionEntries
-  );
-
-  if (
-    !ExactCollisionAuthorityReady &&
-    Scene?.isScene &&
-    typeof Collision.ResolveRaycastHorizontalMove === "function"
-  ) {
-    RayResult = Collision.ResolveRaycastHorizontalMove(
-      Start,
-      EntryDelta,
+    const Fraction = Collision.SweepCircleFraction(
+      Scratch.Position,
+      Scratch.Remaining,
       Radius,
+      Nearby,
       {
-        Scene,
-        Skin: 0.012,
-        EyeHeight,
-        AllowSlide: true,
-        RangePadding: 2.2,
-        HeightFractions: [0.10, 0.32, 0.62, 0.88],
-        LateralRatios: [-0.82, 0, 0.82]
+        MaxSweepSteps,
+        BinarySteps,
+        Filter: Entry => Entry?.Active !== false
       }
     );
+
+    if (Fraction >= 0.9995) {
+      Scratch.Position.add(Scratch.Remaining);
+      Scratch.Remaining.set(0, 0, 0);
+      break;
+    }
+
+    Hit = true;
+    const SkinFraction = Skin / Math.max(RemainingLength, 0.000001);
+    const SafeFraction = THREE.MathUtils.clamp(Fraction - SkinFraction, 0, 1);
+    Scratch.Position.addScaledVector(Scratch.Remaining, SafeFraction);
+
+    Scratch.Probe.copy(Scratch.Position).addScaledVector(
+      Scratch.Remaining,
+      Math.min(0.025 / Math.max(RemainingLength, 0.000001), 1 - SafeFraction)
+    );
+
+    const Normals = BuildContactManifold(Scratch.Probe, Radius, Scratch.Remaining, Nearby);
+    ContactCount = Math.max(ContactCount, Normals.length);
+    if (Normals.length) {
+      LastNormal.copy(Normals[0]);
+      LastEntry = ContactEntries[0] || LastEntry;
+    }
+
+    Scratch.Leftover.copy(Scratch.Remaining).multiplyScalar(1 - SafeFraction);
+    const BeforeProjection = Scratch.Leftover.lengthSq();
+    ProjectAgainstContacts(Scratch.Leftover, Normals);
+
+    // A tiny separation bias prevents repeated zero-time hits without searching
+    // hundreds of radial samples or converting contact into a full hard stop.
+    if (Fraction <= 0.001 && Normals.length) {
+      Scratch.NormalSum.set(0, 0, 0);
+      for (const Normal of Normals) Scratch.NormalSum.add(Normal);
+      if (Scratch.NormalSum.lengthSq() > 0.000001) {
+        Scratch.NormalSum.normalize();
+        Scratch.Position.addScaledVector(Scratch.NormalSum, Skin * 0.55);
+      }
+    }
+
+    Sliding ||= BeforeProjection > Scratch.Leftover.lengthSq() + 0.0000001 && Scratch.Leftover.lengthSq() > 0.0000001;
+    Scratch.Remaining.copy(Scratch.Leftover);
   }
 
-  const EntryFinal = ResolveEntryMove(
-    Start,
-    RayResult.Resolved,
-    Radius,
-    CollisionEntries
-  );
-  const Final = EntryFinal || RayResult;
-  const Hit = Boolean(EntryFirst?.Hit || RayResult?.Hit || EntryFinal?.Hit);
-
-  if (!Hit) return Final;
-
-  const Normal =
-    EntryFinal?.Hit && EntryFinal.Normal?.lengthSq?.() > 0.000001
-      ? EntryFinal.Normal.clone()
-      : RayResult?.Hit && RayResult.Normal?.lengthSq?.() > 0.000001
-        ? RayResult.Normal.clone()
-        : EntryFirst?.Normal?.clone?.() || new THREE.Vector3();
-
+  const Resolved = Scratch.Position.clone().sub(Start);
+  Resolved.y = 0;
   return {
-    ...Final,
-    Hit: true,
-    Entry: EntryFinal?.Entry || RayResult?.Entry || EntryFirst?.Entry || null,
-    Normal,
-    Sliding: Boolean(RayResult?.Sliding),
-    SlideVector: RayResult?.SlideVector?.clone?.() || Final.Resolved?.clone?.() || new THREE.Vector3()
+    Position: Scratch.Position.clone(),
+    Resolved,
+    Hit,
+    Sliding,
+    SlideVector: Hit ? Resolved.clone() : new THREE.Vector3(),
+    Entry: LastEntry,
+    Normal: LastNormal,
+    ContactCount
   };
 }
 
@@ -361,27 +408,21 @@ function RecordContact(Result, Desired) {
   const Contact = ContactState();
   Contact.Normal.copy(Result.Normal || Scratch.DesiredDirection.clone().multiplyScalar(-1));
   if (Contact.Normal.lengthSq() > 0.000001) Contact.Normal.normalize();
-
   Contact.Position.copy(Result.Position);
   Contact.DesiredDirection.copy(Desired);
   if (Contact.DesiredDirection.lengthSq() > 0.000001) Contact.DesiredDirection.normalize();
-
-  Contact.SlideDirection.copy(Result.SlideVector || new THREE.Vector3());
+  Contact.SlideDirection.copy(Result.SlideVector || Result.Resolved || new THREE.Vector3());
   if (Contact.SlideDirection.lengthSq() > 0.000001) Contact.SlideDirection.normalize();
-
   Contact.IntentInward = Math.max(0, -Contact.DesiredDirection.dot(Contact.Normal));
   Contact.SlideAmount = Result.Sliding ? 1 : 0;
-  Contact.Strength = THREE.MathUtils.clamp(0.35 + Contact.IntentInward * 0.65, 0, 1);
+  Contact.Strength = THREE.MathUtils.clamp(0.25 + Contact.IntentInward * 0.60, 0, 1);
   Contact.Sliding = Boolean(Result.Sliding);
-  Contact.Stepped = Boolean(Result.Stepped);
-  Contact.StepHeight = Number(Result.StepHeight) || 0;
+  Contact.ContactCount = Number(Result.ContactCount) || 1;
   Contact.Type = Result.Entry?.Type || "Collision";
   Contact.LastHit = performance.now();
 }
 
-function SettleHeight(Camera, Delta, Entries) {
-  void Entries;
-
+function SettleHeight(Camera, Delta) {
   if (!VerticalStateInitialized) {
     AuthoritativeFloorY = THREE.MathUtils.clamp(
       Number(Camera.position.y) - EyeHeight,
@@ -391,15 +432,13 @@ function SettleHeight(Camera, Delta, Entries) {
     VerticalStateInitialized = true;
   }
 
-  const CurrentFeetY = AuthoritativeFloorY;
-  let TargetFloor = SurfaceHeight(Camera.position, null, CurrentFeetY);
-
+  let TargetFloor = SurfaceHeight(Camera.position);
   const FootSupport = window.__STORE_FOOT_SUPPORT__ || null;
   const SupportAge = performance.now() - Number(FootSupport?.UpdatedAt ?? -Infinity);
+
   if (
     FootSupport?.Active === true &&
-    SupportAge >= 0 &&
-    SupportAge < 140 &&
+    SupportAge >= 0 && SupportAge < 140 &&
     Number.isFinite(FootSupport.Height)
   ) {
     const LeftHeight = Number(FootSupport.LeftHeight);
@@ -407,19 +446,12 @@ function SettleHeight(Camera, Delta, Entries) {
     const SplitStance = Number.isFinite(LeftHeight) &&
       Number.isFinite(RightHeight) &&
       Math.abs(LeftHeight - RightHeight) > 0.022;
-
-    // A split stance at an edge must not lift/drop the physical root by
-    // averaging one raised foot with one floor foot. Body-center support owns Y;
-    // each leg IK handles its own level independently.
-    if (!SplitStance) {
-      TargetFloor = THREE.MathUtils.clamp(Number(FootSupport.Height), 0, MaxStepHeight);
-    }
+    if (!SplitStance) TargetFloor = THREE.MathUtils.clamp(Number(FootSupport.Height), 0, MaxStepHeight);
   }
 
   const Speed = TargetFloor > AuthoritativeFloorY ? StepUpSpeed : StepDownSpeed;
   const MaxDelta = Math.max(0.0001, Math.min(Number(Delta) || 0.016, 0.05) * Speed);
   AuthoritativeFloorY = MoveToward(AuthoritativeFloorY, TargetFloor, MaxDelta);
-
   Camera.position.y = EyeHeight + AuthoritativeFloorY;
   return AuthoritativeFloorY;
 }
@@ -435,11 +467,12 @@ function MoveCharacter(Camera, ForwardAmount, RightAmount, Distance, Delta, Entr
     .addScaledVector(Scratch.Right, Number(RightAmount) || 0);
 
   if (Scratch.Desired.lengthSq() <= 0.000001 || Distance <= 0.000001) {
-    const FloorHeight = SettleHeight(Camera, Delta, CollisionEntries);
+    const FloorHeight = SettleHeight(Camera, Delta);
     return {
       Position: Camera.position.clone(),
       Resolved: new THREE.Vector3(),
       Hit: false,
+      Sliding: false,
       FloorHeight
     };
   }
@@ -449,23 +482,11 @@ function MoveCharacter(Camera, ForwardAmount, RightAmount, Distance, Delta, Entr
   Scratch.Start.copy(Camera.position);
 
   const SafeRadius = THREE.MathUtils.clamp(Number(Radius) || DefaultRadius, 0.20, 0.32);
-  const Result = ResolveWithSlide(
-    Scratch.Start,
-    Scratch.Desired,
-    SafeRadius,
-    CollisionEntries
-  );
+  const Result = ResolveCharacterMove(Scratch.Start, Scratch.Desired, SafeRadius, CollisionEntries);
 
   Camera.position.x = Result.Position.x;
   Camera.position.z = Result.Position.z;
-
-  if (Result.Stepped && Number.isFinite(Result.StepHeight)) {
-    const TargetEyeY = EyeHeight + Result.StepHeight;
-    const MaxDelta = Math.max(0.0001, Math.min(Number(Delta) || 0.016, 0.05) * StepUpSpeed);
-    Camera.position.y = MoveToward(Camera.position.y, TargetEyeY, MaxDelta);
-  }
-
-  Result.FloorHeight = SettleHeight(Camera, Delta, CollisionEntries);
+  Result.FloorHeight = SettleHeight(Camera, Delta);
   RecordContact(Result, Scratch.Desired);
   return Result;
 }
@@ -478,7 +499,10 @@ function GetSettings() {
     MaxStepHeight,
     StepClearance,
     StepUpSpeed,
-    StepDownSpeed
+    StepDownSpeed,
+    MaxSlides,
+    MaxSweepSteps,
+    BinarySteps
   };
 }
 
@@ -501,4 +525,17 @@ const ProceduralPhysics = {
 };
 
 window.__STORE_PROCEDURAL_PHYSICS__ = ProceduralPhysics;
-window.__STORE_PROCEDURAL_PHYSICS_BUILD__ = "V0.35.48-COLLISION-ENTRY-RESTORE";
+window.__STORE_PROCEDURAL_PHYSICS_BUILD__ = "V0.35.68-R98-SINGLE-CONTROLLER";
+
+export default ProceduralPhysics;
+export {
+  MoveCharacter,
+  SettleHeight,
+  SurfaceHeight,
+  RegisterWalkableSurface,
+  UnregisterWalkableSurface,
+  UnregisterChunk,
+  RefreshWalkableSurface,
+  RefreshWalkableSurfaces,
+  GetSettings
+};
