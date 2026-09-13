@@ -1,5 +1,5 @@
-const Cache = "20260912-v03561-collision-assets1";
-const Version = "0.35.61";
+const Cache = "20260913-v03566-r95-physics1";
+const Version = "0.35.66";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
