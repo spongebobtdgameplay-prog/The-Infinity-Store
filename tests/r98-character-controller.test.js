@@ -7,14 +7,28 @@ const root = new URL('../', import.meta.url);
 const read = name => readFileSync(new URL(name, root), 'utf8');
 const exists = name => existsSync(fileURLToPath(new URL(name, root)));
 
-test('R98 removes stacked movement and renderer wrappers', () => {
+test('R98 removes stacked movement, contact, and renderer wrappers', () => {
   const index = read('index.html');
-  assert.doesNotMatch(index, /movement-hard-stop\.js/);
-  assert.doesNotMatch(index, /runtime-collision-supplement-r97\.js/);
-  assert.doesNotMatch(index, /runtime-character-physics-r97\.js/);
-  assert.equal(exists('movement-hard-stop.js'), false);
-  assert.equal(exists('runtime-collision-supplement-r97.js'), false);
-  assert.equal(exists('runtime-character-physics-r97.js'), false);
+  const bootstrap = read('bootstrap.js');
+
+  for (const pattern of [
+    /movement-hard-stop\.js/,
+    /runtime-collision-supplement-r97\.js/,
+    /runtime-character-physics-r97\.js/
+  ]) assert.doesNotMatch(index, pattern);
+
+  for (const pattern of [
+    /movement-contact-compat-r25\.js/,
+    /final-contact-r19\.js/
+  ]) assert.doesNotMatch(bootstrap, pattern);
+
+  for (const file of [
+    'movement-hard-stop.js',
+    'runtime-collision-supplement-r97.js',
+    'runtime-character-physics-r97.js',
+    'movement-contact-compat-r25.js',
+    'final-contact-r19.js'
+  ]) assert.equal(exists(file), false, `${file} should be removed`);
 });
 
 test('R98 movement has one iterative move-and-slide controller', () => {
@@ -37,6 +51,14 @@ test('R98 controller uses a local broad phase and bounded sweep work', () => {
   assert.match(source, /const BinarySteps = 8/);
   assert.doesNotMatch(source, /StepCount = Clamp\(Math\.ceil\(MotionLength \/ 0\.02\)/);
   assert.doesNotMatch(source, /DirectionCount = 20/);
+});
+
+test('R98 no longer executes full-body triangle or per-render contact passes', () => {
+  const bootstrap = read('bootstrap.js');
+  const index = read('index.html');
+  assert.doesNotMatch(bootstrap, /ForceTriangleConstraint/);
+  assert.doesNotMatch(bootstrap, /Final limb contact/);
+  assert.doesNotMatch(index, /runtime-character-physics/);
 });
 
 test('R98 version and bootstrap cache agree', () => {
