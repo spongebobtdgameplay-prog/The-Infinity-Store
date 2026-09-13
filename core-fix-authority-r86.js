@@ -182,6 +182,7 @@ function ProcessInternal(Chunk, Force = false) {
   FixRetailColors(Chunk);
   const Added = InstallEngineCollision(Chunk);
 
+  Chunk.Group.userData.CoreFixR101 = true;
   Chunk.Group.userData.CoreFixR100 = true;
   Chunk.Group.userData.CoreFixR99 = true;
   Chunk.Group.userData.CoreFixR88 = true;
@@ -192,11 +193,23 @@ function ProcessInternal(Chunk, Force = false) {
   return Added;
 }
 
+function StabilizeBatchCulling(Chunk) {
+  Chunk?.Group?.traverse?.(Object => {
+    if (!Object?.isBatchedMesh || !Object.userData?.EngineRenderBatchR100) return;
+    Object.frustumCulled = true;
+    Object.perObjectFrustumCulled = false;
+    Object.sortObjects = false;
+  });
+}
+
 async function InstallEngineRenderBatch(Chunk) {
   if (!EngineRender?.OptimizeChunkStaticRender || !Chunk?.Group || Chunk.Cancelled) return null;
-  return EngineRender.OptimizeChunkStaticRender(Chunk, {
-    Yield: () => WaitForWorkSlice(4, 900)
+  if (window.__STORE_GAMEPLAY_STARTED__ === true) return null;
+  const Result = await EngineRender.OptimizeChunkStaticRender(Chunk, {
+    Yield: () => WaitForWorkSlice(3, 900)
   });
+  StabilizeBatchCulling(Chunk);
+  return Result;
 }
 
 export async function ProcessChunkAsync(Chunk, Force = false) {
@@ -214,9 +227,11 @@ export function ProcessAll() {
   for (const Chunk of Game.ActiveChunks.values()) {
     Seen.add(Chunk);
     ProcessInternal(Chunk);
+    StabilizeBatchCulling(Chunk);
   }
   for (const Chunk of Game.PreparedChunks.values()) {
     if (!Seen.has(Chunk)) ProcessInternal(Chunk);
+    StabilizeBatchCulling(Chunk);
   }
 }
 
@@ -224,4 +239,4 @@ ProcessAll();
 
 window.__STORE_CORE_FIX_R86__ = { ProcessAll, ProcessChunk, ProcessChunkAsync };
 window.__STORE_CORE_FIX_R87__ = window.__STORE_CORE_FIX_R86__;
-window.__STORE_CORE_FIX_BUILD__ = "V0.35.70-R100-ENGINE-COLLISION-RENDER";
+window.__STORE_CORE_FIX_BUILD__ = "V0.35.71-R101-NO-RUNTIME-BATCH-SPIKE";
