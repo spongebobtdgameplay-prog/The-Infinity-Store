@@ -40,9 +40,9 @@ function Game() {
 }
 
 function QualityProfile() {
-  if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1, MinScale: 0.68 };
-  if (Settings.Graphics === "high") return { PixelRatio: 1.30, PointLights: 4, Anisotropy: 4, MinScale: 0.78 };
-  return { PixelRatio: 1.10, PointLights: 3, Anisotropy: 2, MinScale: 0.70 };
+  if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1 };
+  if (Settings.Graphics === "high") return { PixelRatio: 1.35, PointLights: 4, Anisotropy: 4 };
+  return { PixelRatio: 1.15, PointLights: 3, Anisotropy: 2 };
 }
 
 const PerfState = {
@@ -50,11 +50,7 @@ const PerfState = {
   Height: 0,
   Ratio: -1,
   Quality: "",
-  TextureStamp: "",
-  AdaptiveScale: 1,
-  PressureSamples: 0,
-  RecoverySamples: 0,
-  LastAdaptiveAt: -Infinity
+  TextureStamp: ""
 };
 
 function ApplyCamera() {
@@ -82,7 +78,8 @@ function ApplyRenderer() {
   if (!CurrentGame?.Renderer) return;
   const Profile = QualityProfile();
   const DeviceRatio = Math.max(1, Number(devicePixelRatio) || 1);
-  const Ratio = Math.max(0.55, Math.min(DeviceRatio, Profile.PixelRatio) * PerfState.AdaptiveScale);
+  const Ratio = Math.min(DeviceRatio, Profile.PixelRatio);
+
   if (
     PerfState.Width === innerWidth &&
     PerfState.Height === innerHeight &&
@@ -114,10 +111,7 @@ function ApplyTextureBudgetToRoot(Root) {
 
   Root.traverse(Object => {
     if (!Object.isMesh) return;
-    const Materials = Array.isArray(Object.material)
-      ? Object.material
-      : [Object.material];
-
+    const Materials = Array.isArray(Object.material) ? Object.material : [Object.material];
     for (const Material of Materials) {
       if (!Material) continue;
       for (const Key of ["map", "normalMap", "roughnessMap", "metalnessMap", "emissiveMap"]) {
@@ -180,86 +174,73 @@ function ApplyPerformance() {
   CullPointLights();
 }
 
-function UpdateAdaptiveResolution(Fps, P95, Calls, Now) {
-  if (window.__STORE_GAMEPLAY_STARTED__ !== true) return;
-  const Profile = QualityProfile();
-  const UnderPressure = Fps < 53 || P95 > 22 || (Calls > 360 && Fps < 57);
-  const Recovering = Fps >= 59 && P95 < 18.5 && Calls < 430;
-
-  if (UnderPressure) {
-    PerfState.PressureSamples += 1;
-    PerfState.RecoverySamples = 0;
-  } else if (Recovering) {
-    PerfState.RecoverySamples += 1;
-    PerfState.PressureSamples = Math.max(0, PerfState.PressureSamples - 1);
-  } else {
-    PerfState.PressureSamples = Math.max(0, PerfState.PressureSamples - 1);
-    PerfState.RecoverySamples = 0;
-  }
-
-  if (Now - PerfState.LastAdaptiveAt < 1200) return;
-
-  let NextScale = PerfState.AdaptiveScale;
-  if (PerfState.PressureSamples >= 2 && NextScale > Profile.MinScale + 0.001) {
-    NextScale = Math.max(Profile.MinScale, NextScale - 0.08);
-    PerfState.PressureSamples = 0;
-    PerfState.RecoverySamples = 0;
-  } else if (PerfState.RecoverySamples >= 5 && NextScale < 0.999) {
-    NextScale = Math.min(1, NextScale + 0.035);
-    PerfState.PressureSamples = 0;
-    PerfState.RecoverySamples = 0;
-  }
-
-  if (Math.abs(NextScale - PerfState.AdaptiveScale) < 0.001) return;
-  PerfState.AdaptiveScale = NextScale;
-  PerfState.LastAdaptiveAt = Now;
-  PerfState.Width = 0;
-  ApplyRenderer();
-}
-
 let Ambient = null;
 function StartAmbient() {
   if (Ambient) return;
   const AudioClass = window.AudioContext || window.webkitAudioContext;
   if (!AudioClass) return;
+
   const Context = new AudioClass();
   const Master = Context.createGain();
-  Master.gain.value = 0.016 * Settings.AmbientVolume;
+  Master.gain.value = 0.020 * Settings.AmbientVolume;
   Master.connect(Context.destination);
-  const Filter = Context.createBiquadFilter();
-  Filter.type = "lowpass";
-  Filter.frequency.value = 245;
-  Filter.Q.value = 0.55;
-  Filter.connect(Master);
+
+  const NoiseBuffer = Context.createBuffer(1, Context.sampleRate * 2, Context.sampleRate);
+  const Data = NoiseBuffer.getChannelData(0);
+  for (let Index = 0; Index < Data.length; Index += 1) {
+    Data[Index] = (Math.random() * 2 - 1) * 0.20;
+  }
+
+  const Noise = Context.createBufferSource();
+  Noise.buffer = NoiseBuffer;
+  Noise.loop = true;
+  const NoiseFilter = Context.createBiquadFilter();
+  NoiseFilter.type = "lowpass";
+  NoiseFilter.frequency.value = 520;
+  NoiseFilter.Q.value = 0.38;
+  const NoiseGain = Context.createGain();
+  NoiseGain.gain.value = 0.35;
+  Noise.connect(NoiseFilter).connect(NoiseGain).connect(Master);
+
+  const HumFilter = Context.createBiquadFilter();
+  HumFilter.type = "lowpass";
+  HumFilter.frequency.value = 140;
+  HumFilter.Q.value = 0.45;
+  HumFilter.connect(Master);
+
   const A = Context.createOscillator();
   const AGain = Context.createGain();
   A.type = "sine";
-  A.frequency.value = 57.5;
-  AGain.gain.value = 0.76;
-  A.connect(AGain).connect(Filter);
+  A.frequency.value = 59.8;
+  AGain.gain.value = 0.36;
+  A.connect(AGain).connect(HumFilter);
+
   const B = Context.createOscillator();
   const BGain = Context.createGain();
-  B.type = "triangle";
-  B.frequency.value = 115;
-  BGain.gain.value = 0.11;
-  B.connect(BGain).connect(Filter);
+  B.type = "sine";
+  B.frequency.value = 119.6;
+  BGain.gain.value = 0.07;
+  B.connect(BGain).connect(HumFilter);
+
   const Lfo = Context.createOscillator();
   const LfoGain = Context.createGain();
   Lfo.type = "sine";
-  Lfo.frequency.value = 0.07;
-  LfoGain.gain.value = 5;
-  Lfo.connect(LfoGain).connect(Filter.frequency);
+  Lfo.frequency.value = 0.035;
+  LfoGain.gain.value = 18;
+  Lfo.connect(LfoGain).connect(NoiseFilter.frequency);
+
+  Noise.start();
   A.start();
   B.start();
   Lfo.start();
   Context.resume().catch(() => {});
-  Ambient = { Context, Master, A, B, Lfo };
+  Ambient = { Context, Master, Noise, A, B, Lfo };
   window.__STORE_AMBIENT_AUDIO__ = Ambient;
 }
 
 function UpdateAmbient() {
   if (!Ambient) return;
-  Ambient.Master.gain.setTargetAtTime(0.016 * Settings.AmbientVolume, Ambient.Context.currentTime, 0.04);
+  Ambient.Master.gain.setTargetAtTime(0.020 * Settings.AmbientVolume, Ambient.Context.currentTime, 0.04);
 }
 
 function Icon(Path) {
@@ -341,16 +322,13 @@ function BuildSettings() {
     Settings.Graphics = Graphics.value;
     PerfState.TextureStamp = "";
     PerfState.Quality = "";
-    PerfState.AdaptiveScale = 1;
-    PerfState.PressureSamples = 0;
-    PerfState.RecoverySamples = 0;
     SaveSettings();
     ApplyPerformance();
   });
-  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Changes render resolution, light count and texture filtering to hold frame rate."));
+  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Changes fixed render resolution, light count and texture filtering."));
 
   const AmbientControl = RangeControl(0, 1, 0.01, Settings.AmbientVolume, Value => `${Math.round(Value * 100)}%`, Value => { Settings.AmbientVolume = Value; SaveSettings(); UpdateAmbient(); });
-  Body.appendChild(SettingRow("STORE AMBIENT", AmbientControl, "HVAC/electrical room tone."));
+  Body.appendChild(SettingRow("STORE AMBIENT", AmbientControl, "Low HVAC noise, room tone and faint electrical hum."));
 
   const ToggleWrap = document.createElement("label");
   ToggleWrap.className = "R43Toggle";
@@ -361,7 +339,7 @@ function BuildSettings() {
   Toggle.checked = Settings.ShowFps;
   Toggle.addEventListener("change", () => { Settings.ShowFps = Toggle.checked; ToggleText.textContent = Settings.ShowFps ? "VISIBLE" : "HIDDEN"; SaveSettings(); });
   ToggleWrap.append(ToggleText, Toggle);
-  Body.appendChild(SettingRow("FPS COUNTER", { Element: ToggleWrap }, "Shows measured FPS, frame time, draws and adaptive resolution."));
+  Body.appendChild(SettingRow("FPS COUNTER", { Element: ToggleWrap }, "Shows measured FPS, frame time, draw calls and pixel ratio."));
 
   const Foot = document.createElement("div");
   Foot.className = "R43SettingsFoot";
@@ -447,10 +425,10 @@ function FpsFrame(Now) {
     const Fps = 1000 / Average;
     const Sorted = [...Samples].sort((A, B) => A - B);
     const P95 = Sorted[Math.floor((Sorted.length - 1) * 0.95)];
-    const Calls = Game()?.Renderer?.info?.render?.calls ?? 0;
-    UpdateAdaptiveResolution(Fps, P95, Calls, Now);
-    const Resolution = Math.round(PerfState.AdaptiveScale * 100);
-    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span><small style="display:block;flex-basis:100%;font-size:10px;margin-top:5px">95% frame ${P95.toFixed(1)} ms · ${Calls} draws · ${Resolution}% res</small>`;
+    const Renderer = Game()?.Renderer;
+    const Calls = Renderer?.info?.render?.calls ?? 0;
+    const Ratio = Renderer?.getPixelRatio?.() ?? PerfState.Ratio;
+    FpsCounter.innerHTML = `FPS <strong>${Math.round(Fps)}</strong><span>${Average.toFixed(1)} ms</span><small style="display:block;flex-basis:100%;font-size:10px;margin-top:5px">95% frame ${P95.toFixed(1)} ms · ${Calls} draws · ${Ratio.toFixed(2)}x pixels</small>`;
   }
   FpsCounter.classList.toggle("R43Hidden", !Settings.ShowFps);
   requestAnimationFrame(FpsFrame);
@@ -465,5 +443,5 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.70-R100-ADAPTIVE-RESOLUTION";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.70-R100-ADAPTIVE-RESOLUTION";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.71-R101-FIXED-RENDER-RATE";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.71-R101-FIXED-RENDER-RATE";
