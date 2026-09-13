@@ -1,5 +1,5 @@
-const Cache = "20260913-v03568-r98-controller1";
-const Version = "0.35.68";
+const Cache = "20260913-v03569-r99-engine-stream1";
+const Version = "0.35.69";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -373,7 +373,7 @@ try {
   await OptionalImport("./shelf-stock-r83.js", "Stocked showroom shelves");
   await OptionalImport("./price-tag-authority-r83.js", "Single-version compact item prices");
   await OptionalImport("./surface-step-animation-r87.js", "Dedicated carpet step animation utility");
-  await OptionalImport("./core-fix-authority-r86.js", "Exact furniture collision, ghost cleanup and walkable carpets");
+  await OptionalImport("./core-fix-authority-r86.js", "Engine collision ownership and walkable carpets");
   await OptionalImport("./distance-haze-r82.js", "Stable distance haze");
   await OptionalImport("./presentation-ready-r83.js", "Stable off-screen chunk presentation gate");
   await OptionalImport("./stream-loading-cover-r83.js", "Finished-aisle prefetch buffer");
