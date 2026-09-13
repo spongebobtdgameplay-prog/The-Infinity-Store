@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const read = name => readFileSync(new URL('../' + name, import.meta.url), 'utf8');
 
-test('R100 collision subdivides irregular meshes into occupied local cells', () => {
+test('R101 keeps R100 occupied-cell collision', () => {
   const engine = read('store-engine-core-r95.js');
   const core = read('core-fix-authority-r86.js');
   assert.match(engine, /function GeometryCellBoxes/);
@@ -14,48 +14,45 @@ test('R100 collision subdivides irregular meshes into occupied local cells', () 
   assert.match(core, /MaximumPieces:\s*96/);
 });
 
-test('R100 batches different static geometries in the engine', () => {
+test('R101 prevents runtime batch/cull spikes', () => {
   const engine = read('store-engine-core-r95.js');
   const core = read('core-fix-authority-r86.js');
   assert.match(engine, /new THREE\.BatchedMesh/);
   assert.match(engine, /Batch\.addGeometry/);
   assert.match(engine, /Batch\.addInstance/);
-  assert.match(engine, /perObjectFrustumCulled = true/);
-  assert.match(engine, /StaticRenderBatchedR104 = true/);
-  assert.match(core, /EngineRender\.OptimizeChunkStaticRender/);
-  assert.match(core, /WaitForWorkSlice\(4, 900\)/);
+  assert.match(core, /StabilizeBatchCulling/);
+  assert.match(core, /perObjectFrustumCulled = false/);
+  assert.match(core, /__STORE_GAMEPLAY_STARTED__ === true\) return null/);
 });
 
-test('R100 reduces the live aisle and boot window', () => {
+test('R101 restores the finished forward horizon', () => {
   const stream = read('stream-range.js');
   assert.match(stream, /ActiveBack:\s*1/);
-  assert.match(stream, /ActiveAhead:\s*2/);
+  assert.match(stream, /ActiveAhead:\s*3/);
   assert.match(stream, /PrefetchRadius:\s*1/);
-  assert.match(stream, /BootCount:\s*3/);
+  assert.match(stream, /BootCount:\s*4/);
 });
 
-test('R100 gives gameplay background work a larger real idle budget', () => {
+test('R101 no longer over-throttles gameplay background work', () => {
   const budget = read('render-work-budget.js');
-  assert.match(budget, /Math\.min\(Math\.max\(3\.5, MinimumMs\), 4\.5\)/);
-  assert.match(budget, /timeout: GameplayActive\s*\? 1600/);
+  assert.match(budget, /Math\.min\(Math\.max\(2\.25, MinimumMs\), 3\.25\)/);
+  assert.match(budget, /timeout: GameplayActive\s*\? 900/);
 });
 
-test('R100 performance manager adapts resolution with hysteresis', () => {
+test('R101 performance manager uses fixed render ratio, not adaptive downshift', () => {
   const perf = read('performance-manager.js');
-  assert.match(perf, /AdaptiveScale/);
-  assert.match(perf, /PressureSamples/);
-  assert.match(perf, /RecoverySamples/);
-  assert.match(perf, /UpdateAdaptiveResolution/);
-  assert.match(perf, /Now - PerfState\.LastAdaptiveAt < 1200/);
+  assert.doesNotMatch(perf, /AdaptiveScale/);
+  assert.doesNotMatch(perf, /UpdateAdaptiveResolution/);
+  assert.match(perf, /const Ratio = Math\.min\(DeviceRatio, Profile\.PixelRatio\)/);
 });
 
-test('R100 version and cache keys agree', () => {
-  assert.equal(read('VERSION').trim(), '0.35.70');
+test('R101 version and cache keys agree', () => {
+  assert.equal(read('VERSION').trim(), '0.35.71');
   const bootstrap = read('bootstrap.js');
   const index = read('index.html');
-  assert.match(bootstrap, /const Version = "0\.35\.70"/);
-  assert.match(bootstrap, /20260913-v03570-r100-render-collision1/);
-  assert.match(index, /v03570-r100-engine1/);
-  assert.match(index, /v03570-r100-stream1/);
-  assert.match(index, /v03570-r100-budget1/);
+  assert.match(bootstrap, /const Version = "0\.35\.71"/);
+  assert.match(bootstrap, /20260913-v03571-r101-no-render-throttle1/);
+  assert.match(index, /v03571-r101-engine1/);
+  assert.match(index, /v03571-r101-stream1/);
+  assert.match(index, /v03571-r101-budget1/);
 });
