@@ -1,5 +1,5 @@
-const Cache = "20260913-v03570-r100-render-collision1";
-const Version = "0.35.70";
+const Cache = "20260913-v03571-r101-no-render-throttle1";
+const Version = "0.35.71";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -59,7 +59,7 @@ function SetBootStage(Text) {
 window.__STORE_SET_BOOT_STAGE__ = SetBootStage;
 
 let LastWorldReady = 0;
-let LastWorldTotal = 3;
+let LastWorldTotal = 4;
 
 function SetWorldProgress(Ready, Total, Stage = "", Detail = "") {
   const SafeTotal = Math.max(1, Number(Total) || 1);
@@ -374,7 +374,7 @@ try {
   await OptionalImport("./shelf-stock-r83.js", "Stocked showroom shelves");
   await OptionalImport("./price-tag-authority-r83.js", "Single-version compact item prices");
   await OptionalImport("./surface-step-animation-r87.js", "Dedicated carpet step animation utility");
-  await OptionalImport("./core-fix-authority-r86.js", "Engine collision ownership and render batching");
+  await OptionalImport("./core-fix-authority-r86.js", "Engine collision ownership and stable render");
   await OptionalImport("./distance-haze-r82.js", "Stable distance haze");
   await OptionalImport("./presentation-ready-r83.js", "Stable off-screen chunk presentation gate");
   await OptionalImport("./stream-loading-cover-r83.js", "Finished-aisle prefetch buffer");
