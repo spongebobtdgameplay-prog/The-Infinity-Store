@@ -1,9 +1,10 @@
 export const STREAM_RANGE = Object.freeze({
-  // Original high-quality fog reaches 148m. Six 30m aisles leave a full margin
-  // at either end of the current aisle; preload three more for sprinting/turning.
-  ActiveRadius: 6,
-  PrefetchRadius: 9,
-  BootCount: 7
+  // Keep enough finished store ahead to hide generation, but do not retain a
+  // dozen full furniture aisles behind/around the player. game.js frustum
+  // streaming decides what is actually rendered inside this small live window.
+  ActiveRadius: 3,
+  PrefetchRadius: 3,
+  BootCount: 4
 });
 
 export function ChunkRange(CurrentIndex) {
