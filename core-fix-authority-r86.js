@@ -157,7 +157,7 @@ function InstallEngineCollision(Chunk) {
   return EngineCollision.EnsureChunkCollision(
     Chunk,
     Game.CollisionBoxes,
-    { EyeHeight: 1.68, MaximumPieces: 48 }
+    { EyeHeight: 1.68, MaximumPieces: 96 }
   );
 }
 
