@@ -1,10 +1,10 @@
 import * as THREE from "three";
 
-const Build = "V0.35.69-R99-ENGINE";
+const Build = "V0.35.70-R100-ENGINE";
 const RequiredThreeRevision = "180";
 
-if (!THREE?.Vector3 || !THREE?.BufferGeometry) {
-  throw new Error("The Infinity Store engine requires Three.js before boot.");
+if (!THREE?.Vector3 || !THREE?.BufferGeometry || !THREE?.BatchedMesh) {
+  throw new Error("The Infinity Store engine requires Three.js r180 with BatchedMesh before boot.");
 }
 if (String(THREE.REVISION) !== RequiredThreeRevision) {
   throw new Error(`Unsupported Three.js revision ${THREE.REVISION}; expected ${RequiredThreeRevision}.`);
@@ -43,6 +43,7 @@ function IsVisualHelper(Object) {
     Data.NonPhysicalVisualR95 === true ||
     Data.IgnoreWorldCollisionR95 === true ||
     Data.RenderBatchR104 === true ||
+    Data.EngineRenderBatchR100 === true ||
     /Text|Label|Glow|Highlight|Selection|Outline|Crosshair/i.test(Name) ||
     /TextGeometry/i.test(GeometryType)
   );
@@ -64,9 +65,9 @@ function IsPhysicalMesh(Object) {
 
 // ---------------------------------------------------------------------------
 // Engine-owned compound collision.
-// Every physical render root gets cheap oriented mesh boxes unless another
-// authoritative collider already owns that root. This fills collision holes
-// without doing triangle scans every frame.
+// R100 subdivides irregular meshes into occupied local-space cells. Runtime
+// collision remains cheap OBB tests, but the boxes follow the actual projected
+// mesh much more closely than one bounding box per mesh.
 // ---------------------------------------------------------------------------
 
 const CollisionScratch = {
@@ -76,9 +77,59 @@ const CollisionScratch = {
   Delta: new THREE.Vector3(),
   LocalNormal: new THREE.Vector3(),
   WorldNormal: new THREE.Vector3(),
-  Scale: new THREE.Vector3(),
-  Bounds: new THREE.Box3()
+  Scale: new THREE.Vector3()
 };
+const GeometryCollisionCells = new WeakMap();
+
+function CollisionCellCacheKey(Options = {}) {
+  const Axis = Clamp(Math.trunc(Number(Options.CollisionGridAxis) || 4), 1, 4);
+  const Padding = Math.max(0, Number(Options.CollisionCellPadding) || 0.004);
+  return `${Axis}:${Padding.toFixed(5)}`;
+}
+
+function PointInTriangle2D(X, Z, AX, AZ, BX, BZ, CX, CZ) {
+  const D1 = (X - BX) * (AZ - BZ) - (AX - BX) * (Z - BZ);
+  const D2 = (X - CX) * (BZ - CZ) - (BX - CX) * (Z - CZ);
+  const D3 = (X - AX) * (CZ - AZ) - (CX - AX) * (Z - AZ);
+  const HasNegative = D1 < -1e-8 || D2 < -1e-8 || D3 < -1e-8;
+  const HasPositive = D1 > 1e-8 || D2 > 1e-8 || D3 > 1e-8;
+  return !(HasNegative && HasPositive);
+}
+
+function SegmentIntersectsSegment2D(AX, AZ, BX, BZ, CX, CZ, DX, DZ) {
+  const R1X = BX - AX;
+  const R1Z = BZ - AZ;
+  const R2X = DX - CX;
+  const R2Z = DZ - CZ;
+  const Denominator = R1X * R2Z - R1Z * R2X;
+  if (Math.abs(Denominator) <= 1e-10) return false;
+  const QX = CX - AX;
+  const QZ = CZ - AZ;
+  const T = (QX * R2Z - QZ * R2X) / Denominator;
+  const U = (QX * R1Z - QZ * R1X) / Denominator;
+  return T >= -1e-8 && T <= 1 + 1e-8 && U >= -1e-8 && U <= 1 + 1e-8;
+}
+
+function TriangleIntersectsCell2D(AX, AZ, BX, BZ, CX, CZ, MinX, MaxX, MinZ, MaxZ) {
+  const InRect = (X, Z) => X >= MinX && X <= MaxX && Z >= MinZ && Z <= MaxZ;
+  if (InRect(AX, AZ) || InRect(BX, BZ) || InRect(CX, CZ)) return true;
+
+  for (const [X, Z] of [[MinX, MinZ], [MaxX, MinZ], [MaxX, MaxZ], [MinX, MaxZ]]) {
+    if (PointInTriangle2D(X, Z, AX, AZ, BX, BZ, CX, CZ)) return true;
+  }
+
+  const TriangleEdges = [[AX, AZ, BX, BZ], [BX, BZ, CX, CZ], [CX, CZ, AX, AZ]];
+  const RectEdges = [
+    [MinX, MinZ, MaxX, MinZ], [MaxX, MinZ, MaxX, MaxZ],
+    [MaxX, MaxZ, MinX, MaxZ], [MinX, MaxZ, MinX, MinZ]
+  ];
+  for (const TriangleEdge of TriangleEdges) {
+    for (const RectEdge of RectEdges) {
+      if (SegmentIntersectsSegment2D(...TriangleEdge, ...RectEdge)) return true;
+    }
+  }
+  return false;
+}
 
 function RootCollisionOwned(Chunk, Root) {
   const Name = String(Root?.name || "");
@@ -97,10 +148,140 @@ function RootCollisionOwned(Chunk, Root) {
   return false;
 }
 
+function GeometryCellBoxes(Geometry, Options = {}) {
+  const CacheKey = CollisionCellCacheKey(Options);
+  let GeometryCache = GeometryCollisionCells.get(Geometry);
+  if (GeometryCache?.has(CacheKey)) return GeometryCache.get(CacheKey);
+  if (!GeometryCache) {
+    GeometryCache = new Map();
+    GeometryCollisionCells.set(Geometry, GeometryCache);
+  }
+
+  if (!Geometry?.attributes?.position) return [];
+  if (!Geometry.boundingBox) Geometry.computeBoundingBox?.();
+  const Bounds = Geometry.boundingBox?.clone?.();
+  if (!Bounds || Bounds.isEmpty()) return [];
+
+  const Position = Geometry.attributes.position;
+  const Size = Bounds.getSize(new THREE.Vector3());
+  const Longest = Math.max(Size.x, Size.z);
+  const RequestedAxisCells = Clamp(Math.trunc(Number(Options.CollisionGridAxis) || 4), 1, 4);
+  const DenseEnough = Position.count >= 24 && Longest >= 0.34;
+  const AxisCells = DenseEnough ? RequestedAxisCells : 1;
+  const XCells = Size.x >= Math.max(0.18, Longest * 0.28) ? AxisCells : 1;
+  const ZCells = Size.z >= Math.max(0.18, Longest * 0.28) ? AxisCells : 1;
+
+  if (XCells === 1 && ZCells === 1) {
+    const Single = [Bounds];
+    GeometryCache.set(CacheKey, Single);
+    return Single;
+  }
+
+  const Count = XCells * ZCells;
+  const Occupied = new Uint8Array(Count);
+  const MinY = new Float64Array(Count);
+  const MaxY = new Float64Array(Count);
+  MinY.fill(Infinity);
+  MaxY.fill(-Infinity);
+
+  const CellWidth = Math.max(Size.x / XCells, 0.0001);
+  const CellDepth = Math.max(Size.z / ZCells, 0.0001);
+  const Index = Geometry.index;
+  const TriangleCount = Index
+    ? Math.floor(Index.count / 3)
+    : Math.floor(Position.count / 3);
+
+  const CellX = Value => Clamp(
+    Math.floor((Value - Bounds.min.x) / CellWidth),
+    0,
+    XCells - 1
+  );
+  const CellZ = Value => Clamp(
+    Math.floor((Value - Bounds.min.z) / CellDepth),
+    0,
+    ZCells - 1
+  );
+
+  for (let Triangle = 0; Triangle < TriangleCount; Triangle += 1) {
+    const Offset = Triangle * 3;
+    const IA = Index ? Index.getX(Offset) : Offset;
+    const IB = Index ? Index.getX(Offset + 1) : Offset + 1;
+    const IC = Index ? Index.getX(Offset + 2) : Offset + 2;
+
+    const AX = Position.getX(IA);
+    const AY = Position.getY(IA);
+    const AZ = Position.getZ(IA);
+    const BX = Position.getX(IB);
+    const BY = Position.getY(IB);
+    const BZ = Position.getZ(IB);
+    const CX = Position.getX(IC);
+    const CY = Position.getY(IC);
+    const CZ = Position.getZ(IC);
+
+    const MinCellX = CellX(Math.min(AX, BX, CX));
+    const MaxCellX = CellX(Math.max(AX, BX, CX));
+    const MinCellZ = CellZ(Math.min(AZ, BZ, CZ));
+    const MaxCellZ = CellZ(Math.max(AZ, BZ, CZ));
+    const TriangleMinY = Math.min(AY, BY, CY);
+    const TriangleMaxY = Math.max(AY, BY, CY);
+
+    for (let Z = MinCellZ; Z <= MaxCellZ; Z += 1) {
+      for (let X = MinCellX; X <= MaxCellX; X += 1) {
+        const CellMinX = Bounds.min.x + X * CellWidth;
+        const CellMaxX = X === XCells - 1 ? Bounds.max.x : CellMinX + CellWidth;
+        const CellMinZ = Bounds.min.z + Z * CellDepth;
+        const CellMaxZ = Z === ZCells - 1 ? Bounds.max.z : CellMinZ + CellDepth;
+        if (!TriangleIntersectsCell2D(
+          AX, AZ, BX, BZ, CX, CZ,
+          CellMinX, CellMaxX, CellMinZ, CellMaxZ
+        )) continue;
+
+        const CellIndex = Z * XCells + X;
+        Occupied[CellIndex] = 1;
+        MinY[CellIndex] = Math.min(MinY[CellIndex], TriangleMinY);
+        MaxY[CellIndex] = Math.max(MaxY[CellIndex], TriangleMaxY);
+      }
+    }
+  }
+
+  const Boxes = [];
+  const Padding = Math.max(0, Number(Options.CollisionCellPadding) || 0.004);
+  for (let Z = 0; Z < ZCells; Z += 1) {
+    for (let X = 0; X < XCells; X += 1) {
+      const CellIndex = Z * XCells + X;
+      if (!Occupied[CellIndex]) continue;
+
+      const MinX = Bounds.min.x + X * CellWidth;
+      const MaxX = X === XCells - 1 ? Bounds.max.x : MinX + CellWidth;
+      const MinZ = Bounds.min.z + Z * CellDepth;
+      const MaxZ = Z === ZCells - 1 ? Bounds.max.z : MinZ + CellDepth;
+      const CellMinY = Number.isFinite(MinY[CellIndex]) ? MinY[CellIndex] : Bounds.min.y;
+      const CellMaxY = Number.isFinite(MaxY[CellIndex]) ? MaxY[CellIndex] : Bounds.max.y;
+
+      Boxes.push(new THREE.Box3(
+        new THREE.Vector3(
+          Math.max(Bounds.min.x, MinX - Padding),
+          Math.max(Bounds.min.y, CellMinY - Padding),
+          Math.max(Bounds.min.z, MinZ - Padding)
+        ),
+        new THREE.Vector3(
+          Math.min(Bounds.max.x, MaxX + Padding),
+          Math.min(Bounds.max.y, CellMaxY + Padding),
+          Math.min(Bounds.max.z, MaxZ + Padding)
+        )
+      ));
+    }
+  }
+
+  const Result = Boxes.length ? Boxes : [Bounds];
+  GeometryCache.set(CacheKey, Result);
+  return Result;
+}
+
 function BuildCollisionPieces(Root, Options = {}) {
   if (!Root?.isObject3D) return [];
   const Pieces = [];
-  const MaximumPieces = Clamp(Math.trunc(Number(Options.MaximumPieces) || 48), 1, 96);
+  const MaximumPieces = Clamp(Math.trunc(Number(Options.MaximumPieces) || 72), 1, 128);
 
   Root.updateWorldMatrix(true, true);
   Root.traverse(Object => {
@@ -109,10 +290,8 @@ function BuildCollisionPieces(Root, Options = {}) {
     const Name = String(Object.name || "");
     if (/^(Floor|Ceiling)$/i.test(Name)) return;
 
-    const Geometry = Object.geometry;
-    if (!Geometry.boundingBox) Geometry.computeBoundingBox?.();
-    const LocalBox = Geometry.boundingBox?.clone?.();
-    if (!LocalBox || LocalBox.isEmpty()) return;
+    const LocalBoxes = GeometryCellBoxes(Object.geometry, Options);
+    if (!LocalBoxes.length) return;
 
     Object.updateWorldMatrix(true, false);
     const MatrixWorld = Object.matrixWorld.clone();
@@ -123,10 +302,20 @@ function BuildCollisionPieces(Root, Options = {}) {
       Math.max(0.0001, Math.abs(CollisionScratch.Scale.y)),
       Math.max(0.0001, Math.abs(CollisionScratch.Scale.z))
     );
-    const WorldBox = LocalBox.clone().applyMatrix4(MatrixWorld);
-    if (WorldBox.isEmpty()) return;
 
-    Pieces.push({ Object, LocalBox, MatrixWorld, Inverse, Scale, WorldBox });
+    for (const LocalBox of LocalBoxes) {
+      if (Pieces.length >= MaximumPieces) break;
+      const WorldBox = LocalBox.clone().applyMatrix4(MatrixWorld);
+      if (WorldBox.isEmpty()) continue;
+      Pieces.push({
+        Object,
+        LocalBox: LocalBox.clone(),
+        MatrixWorld,
+        Inverse,
+        Scale,
+        WorldBox
+      });
+    }
   });
 
   return Pieces;
@@ -256,9 +445,10 @@ function BuildCompoundCollisionEntry(Root, ChunkId = "", Options = {}) {
     Box: Bounds.clone(),
     OriginalBox: Bounds.clone(),
     ChunkId: String(ChunkId || Root.userData?.ChunkId || ""),
-    Type: `${String(Root.name || "PhysicalObject")}EngineCompoundR99`,
+    Type: `${String(Root.name || "PhysicalObject")}EngineCompoundR100`,
     Active: false,
     EngineCompoundR99: true,
+    EngineCompoundR100: true,
     PreciseGeometry: true,
     CollisionObject: Root,
     CollisionPieces: Pieces,
@@ -301,7 +491,7 @@ function EnsureChunkCollision(Chunk, GlobalCollisionBoxes = null, Options = {}) 
     Chunk.CollisionEntries ||= [];
     Chunk.CollisionEntries.push(Entry);
     Root.userData ||= {};
-    Root.userData.EngineCollisionR99 = true;
+    Root.userData.EngineCollisionR100 = true;
 
     if (
       Entry.Active &&
@@ -313,6 +503,257 @@ function EnsureChunkCollision(Chunk, GlobalCollisionBoxes = null, Options = {}) 
   }
 
   return Added;
+}
+
+// ---------------------------------------------------------------------------
+// Engine-owned static render batching.
+// THREE.BatchedMesh can combine different geometries that share one material.
+// This is the important difference from the old game-side InstancedMesh pass,
+// which only batched exact geometry UUID matches and left hundreds of draws.
+// ---------------------------------------------------------------------------
+
+const RenderScratch = {
+  ChunkInverse: new THREE.Matrix4(),
+  LocalMatrix: new THREE.Matrix4()
+};
+
+function RenderMaterialSignature(Material) {
+  if (!Material || Array.isArray(Material)) return "";
+  const TextureId = Texture => Texture?.uuid || "";
+  return [
+    Material.type,
+    Material.color?.isColor ? Material.color.getHexString() : "",
+    Material.emissive?.isColor ? Material.emissive.getHexString() : "",
+    Number(Material.emissiveIntensity || 0).toFixed(3),
+    Number(Material.roughness ?? -1).toFixed(3),
+    Number(Material.metalness ?? -1).toFixed(3),
+    Number(Material.opacity ?? 1).toFixed(3),
+    Number(Material.alphaTest ?? 0).toFixed(3),
+    Number(Material.side ?? 0),
+    Number(Material.blending ?? 0),
+    Material.depthTest === false ? 0 : 1,
+    Material.depthWrite === false ? 0 : 1,
+    Material.vertexColors === true ? 1 : 0,
+    TextureId(Material.map),
+    TextureId(Material.normalMap),
+    TextureId(Material.roughnessMap),
+    TextureId(Material.metalnessMap),
+    TextureId(Material.emissiveMap),
+    TextureId(Material.aoMap),
+    TextureId(Material.lightMap)
+  ].join(":");
+}
+
+function GeometryLayoutSignature(Geometry) {
+  if (!Geometry?.attributes?.position) return "";
+  const Attributes = Object.keys(Geometry.attributes).sort().map(Name => {
+    const Attribute = Geometry.attributes[Name];
+    return [
+      Name,
+      Attribute.itemSize,
+      Attribute.normalized ? 1 : 0,
+      Attribute.array?.constructor?.name || ""
+    ].join("/");
+  }).join(",");
+  const Index = Geometry.index;
+  return `${Index ? `I/${Index.array?.constructor?.name || ""}` : "N"}|${Attributes}`;
+}
+
+function CanEngineBatchMesh(Mesh) {
+  if (!Mesh?.isMesh || Mesh.isBatchedMesh || Mesh.isInstancedMesh || Mesh.isSkinnedMesh) return false;
+  if (!Mesh.visible || !Mesh.geometry?.attributes?.position || !Mesh.material) return false;
+  if (Array.isArray(Mesh.material)) return false;
+  if (Mesh.morphTargetInfluences?.length) return false;
+  if (Mesh.material.transparent === true) return false;
+  if (Mesh.userData?.NoRenderBatchR104 || Mesh.userData?.NoEngineBatchR100) return false;
+  if (IsVisualHelper(Mesh)) return false;
+  return true;
+}
+
+function EngineBatchRoots(Chunk) {
+  const Roots = [];
+  const Seen = new Set();
+  const Add = Root => {
+    if (!Root?.isObject3D || !Root.parent || Seen.has(Root)) return;
+    if (Root.name === "StoreTask" || IsWalkableSurface(Root)) return;
+    Seen.add(Root);
+    Roots.push(Root);
+  };
+
+  for (const Model of Chunk?.Models || []) Add(Model);
+  for (const Object of Chunk?.Group?.children || []) {
+    if (
+      Object?.userData?.RetailImportedR79 ||
+      Object?.userData?.RetailSellableR84 ||
+      Object?.userData?.ShelfStockR83
+    ) Add(Object);
+  }
+  return Roots;
+}
+
+function DisposeBatchOnRemoval(Batch) {
+  const Dispose = () => {
+    Batch.removeEventListener("removed", Dispose);
+    Batch.dispose?.();
+  };
+  Batch.addEventListener("removed", Dispose);
+}
+
+async function OptimizeChunkStaticRender(Chunk, Options = {}) {
+  if (!Chunk?.Group || Chunk.Cancelled) return { Batches: 0, Sources: 0 };
+  if (Chunk.Group.userData?.EngineStaticBatchedR100) {
+    return {
+      Batches: Number(Chunk.Group.userData.EngineStaticBatchCountR100) || 0,
+      Sources: Number(Chunk.Group.userData.EngineStaticSourceCountR100) || 0
+    };
+  }
+
+  const Yield = typeof Options.Yield === "function"
+    ? Options.Yield
+    : (() => Promise.resolve());
+  const Roots = EngineBatchRoots(Chunk);
+  if (!Roots.length) {
+    Chunk.Group.userData.EngineStaticBatchedR100 = true;
+    Chunk.Group.userData.StaticRenderBatchedR104 = true;
+    return { Batches: 0, Sources: 0 };
+  }
+
+  Chunk.Group.updateWorldMatrix(true, true);
+  RenderScratch.ChunkInverse.copy(Chunk.Group.matrixWorld).invert();
+  const Groups = new Map();
+
+  for (let RootIndex = 0; RootIndex < Roots.length; RootIndex += 1) {
+    const Root = Roots[RootIndex];
+    Root.updateWorldMatrix(true, true);
+    Root.traverse(Mesh => {
+      if (!CanEngineBatchMesh(Mesh)) return;
+      const MaterialSignature = RenderMaterialSignature(Mesh.material);
+      const LayoutSignature = GeometryLayoutSignature(Mesh.geometry);
+      if (!MaterialSignature || !LayoutSignature) return;
+      const Key = `${MaterialSignature}|${LayoutSignature}`;
+      let Group = Groups.get(Key);
+      if (!Group) {
+        Group = { Material: Mesh.material, Meshes: [] };
+        Groups.set(Key, Group);
+      }
+      Group.Meshes.push(Mesh);
+    });
+
+    if (RootIndex > 0 && RootIndex % 3 === 0) await Yield();
+  }
+
+  let BatchCount = 0;
+  let SourceCount = 0;
+
+  for (const Group of Groups.values()) {
+    if (Group.Meshes.length < 2) continue;
+
+    const UniqueGeometry = new Map();
+    let MaxVertices = 0;
+    let MaxIndices = 0;
+    for (const Mesh of Group.Meshes) {
+      const Geometry = Mesh.geometry;
+      if (UniqueGeometry.has(Geometry.uuid)) continue;
+      UniqueGeometry.set(Geometry.uuid, Geometry);
+      MaxVertices += Geometry.attributes.position.count;
+      MaxIndices += Geometry.index?.count || 0;
+    }
+
+    if (!MaxVertices) continue;
+
+    let Batch = null;
+    try {
+      Batch = new THREE.BatchedMesh(
+        Group.Meshes.length,
+        MaxVertices,
+        Math.max(1, MaxIndices),
+        Group.Material
+      );
+      Batch.name = `EngineStaticBatchR100-${Chunk.Index}-${BatchCount}`;
+      Batch.userData.ChunkId = Chunk.Id;
+      Batch.userData.RenderBatchR104 = true;
+      Batch.userData.EngineRenderBatchR100 = true;
+      Batch.userData.DecorationNoCollision = true;
+      Batch.castShadow = false;
+      Batch.receiveShadow = false;
+      Batch.frustumCulled = true;
+      Batch.perObjectFrustumCulled = true;
+      Batch.sortObjects = false;
+
+      const GeometryIds = new Map();
+      for (const [Uuid, Geometry] of UniqueGeometry) {
+        GeometryIds.set(Uuid, Batch.addGeometry(Geometry));
+      }
+
+      const BatchedSources = [];
+      for (const Mesh of Group.Meshes) {
+        Mesh.updateWorldMatrix(true, false);
+        RenderScratch.LocalMatrix.multiplyMatrices(
+          RenderScratch.ChunkInverse,
+          Mesh.matrixWorld
+        );
+        if (RenderScratch.LocalMatrix.determinant() < 0) continue;
+        const GeometryId = GeometryIds.get(Mesh.geometry.uuid);
+        if (!Number.isInteger(GeometryId)) continue;
+        const InstanceId = Batch.addInstance(GeometryId);
+        Batch.setMatrixAt(InstanceId, RenderScratch.LocalMatrix);
+        BatchedSources.push(Mesh);
+      }
+
+      if (BatchedSources.length < 2) {
+        Batch.dispose?.();
+        continue;
+      }
+
+      Batch.computeBoundingBox?.();
+      Batch.computeBoundingSphere?.();
+      Batch.updateMatrix();
+      Batch.matrixAutoUpdate = false;
+      Chunk.Group.add(Batch);
+      DisposeBatchOnRemoval(Batch);
+
+      for (const Mesh of BatchedSources) {
+        Mesh.visible = false;
+        Mesh.userData.RenderBatchedSourceR104 = true;
+        Mesh.userData.EngineBatchedSourceR100 = true;
+        SourceCount += 1;
+      }
+      BatchCount += 1;
+    } catch (Error) {
+      Batch?.dispose?.();
+      console.warn("Engine static batch skipped", Error);
+    }
+
+    if (BatchCount > 0 && BatchCount % 2 === 0) await Yield();
+  }
+
+  for (let RootIndex = 0; RootIndex < Roots.length; RootIndex += 1) {
+    const Root = Roots[RootIndex];
+    let VisiblePhysicalMesh = false;
+    Root.traverse(Object => {
+      if (!Object?.isObject3D) return;
+      Object.updateMatrix();
+      Object.matrixAutoUpdate = false;
+      if (Object?.isMesh && Object.visible && !IsVisualHelper(Object)) {
+        VisiblePhysicalMesh = true;
+      }
+    });
+    if (!VisiblePhysicalMesh) {
+      Root.userData.RenderBatchedSourceR104 = true;
+      Root.userData.EngineBatchedSourceRootR100 = true;
+    }
+    if (RootIndex > 0 && RootIndex % 4 === 0) await Yield();
+  }
+
+  Chunk.Group.userData.EngineStaticBatchedR100 = true;
+  Chunk.Group.userData.EngineStaticBatchCountR100 = BatchCount;
+  Chunk.Group.userData.EngineStaticSourceCountR100 = SourceCount;
+  // Compatibility flag: game.js's older UUID-only batching pass must not run.
+  Chunk.Group.userData.StaticRenderBatchedR104 = true;
+  Chunk.Group.userData.StaticRenderBatchCountR104 = BatchCount;
+  Chunk.Group.userData.StaticRenderSourceMeshCountR104 = SourceCount;
+
+  return { Batches: BatchCount, Sources: SourceCount };
 }
 
 class GroupedSpringDeformer {
@@ -591,11 +1032,17 @@ const Engine = Object.freeze({
   Math: Object.freeze({ GaussianInfluence, RingBulge }),
   CollisionPolicy: Object.freeze({ IsPhysicalMesh, IsVisualHelper, IsWalkableSurface }),
   Collision: Object.freeze({
+    GeometryCellBoxes,
     BuildCollisionPieces,
     BuildCompoundCollisionEntry,
     EnsureChunkCollision,
     CompoundTouchesCircle,
     CompoundContactNormal
+  }),
+  Render: Object.freeze({
+    OptimizeChunkStaticRender,
+    RenderMaterialSignature,
+    GeometryLayoutSignature
   }),
   Deformation: Object.freeze({
     GroupedSpringDeformer,
@@ -620,11 +1067,13 @@ export {
   IsPhysicalMesh,
   IsVisualHelper,
   IsWalkableSurface,
+  GeometryCellBoxes,
   BuildCollisionPieces,
   BuildCompoundCollisionEntry,
   EnsureChunkCollision,
   CompoundTouchesCircle,
   CompoundContactNormal,
+  OptimizeChunkStaticRender,
   RegisterDeformer,
   UnregisterDeformer,
   StepDeformers,
