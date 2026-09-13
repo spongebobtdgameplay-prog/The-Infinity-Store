@@ -4,7 +4,7 @@ const Collision = window.__STORE_COLLISION_UTILITY__;
 if (!Collision) throw new Error("Collision utility must load before procedural physics.");
 
 const EyeHeight = 1.68;
-const DefaultRadius = 0.255;
+const DefaultRadius = 0.48;
 const Skin = 0.012;
 const MaxStepHeight = 0.30;
 const StepClearance = 0.018;
@@ -52,10 +52,6 @@ function FiniteBounds(Bounds) {
 
 function EntryBounds(Entry) {
   return Collision.EntryBounds?.(Entry) || Entry?.OriginalStructureBox || Entry?.OriginalBox || Entry?.Box || Entry || null;
-}
-
-function IsStructure(Entry) {
-  return Boolean(Entry?.PrecisePlayerStructure || /Wall|Partition|Boundary|RearStore|Door/i.test(String(Entry?.Type || "")));
 }
 
 function IsExplicitWalkable(Entry) {
@@ -216,14 +212,27 @@ function CollectNearbyEntries(Start, Desired, Radius, Entries) {
   return NearbyEntries;
 }
 
-function EntryNormal(Entry, Position, Motion, Target) {
+function EntryNormal(Entry, Position, Radius, Motion, Target) {
+  // Engine compound colliders know their own orientation; use that first.
+  if (typeof Entry?.GetContactNormal === "function") {
+    try {
+      Target.set(0, 0, 0);
+      if (Entry.GetContactNormal(Position, Radius, Motion, Target) && Target.lengthSq() > 0.000001) {
+        Target.y = 0;
+        Target.normalize();
+        if (Motion?.lengthSq?.() > 0.000001 && Motion.dot(Target) > 0) Target.negate();
+        return true;
+      }
+    } catch {}
+  }
+
   const Bounds = EntryBounds(Entry);
   if (!FiniteBounds(Bounds)) return false;
-
-  const MinX = Bounds.min.x - DefaultRadius;
-  const MaxX = Bounds.max.x + DefaultRadius;
-  const MinZ = Bounds.min.z - DefaultRadius;
-  const MaxZ = Bounds.max.z + DefaultRadius;
+  const SafeRadius = Math.max(0.01, Number(Radius) || DefaultRadius);
+  const MinX = Bounds.min.x - SafeRadius;
+  const MaxX = Bounds.max.x + SafeRadius;
+  const MinZ = Bounds.min.z - SafeRadius;
+  const MaxZ = Bounds.max.z + SafeRadius;
 
   if (Position.x >= MinX && Position.x <= MaxX && Position.z >= MinZ && Position.z <= MaxZ) {
     const Left = Position.x - MinX;
@@ -271,20 +280,17 @@ function BuildContactManifold(Position, Radius, Motion, Entries) {
       Touching = Collision.EntryTouchesCircle?.(Entry, Position, Radius + Skin * 0.35) === true;
     } catch {}
     if (!Touching) continue;
-    if (EntryNormal(Entry, Position, Motion, Scratch.Normal)) AddContactNormal(Scratch.Normal, Entry);
+    if (EntryNormal(Entry, Position, Radius, Motion, Scratch.Normal)) AddContactNormal(Scratch.Normal, Entry);
   }
 
   if (!ContactNormals.length && Motion.lengthSq() > 0.000001) {
     Scratch.Normal.copy(Motion).normalize().negate();
     AddContactNormal(Scratch.Normal, null);
   }
-
   return ContactNormals;
 }
 
 function ProjectAgainstContacts(Vector, Normals) {
-  // Sequential projection is the same basic idea used by move-and-slide style
-  // character controllers. Repeating the pass handles corners/two-wall cases.
   for (let Pass = 0; Pass < 2; Pass += 1) {
     let Changed = false;
     for (const Normal of Normals) {
@@ -366,8 +372,6 @@ function ResolveCharacterMove(Start, Desired, Radius, Entries) {
     const BeforeProjection = Scratch.Leftover.lengthSq();
     ProjectAgainstContacts(Scratch.Leftover, Normals);
 
-    // A tiny separation bias prevents repeated zero-time hits without searching
-    // hundreds of radial samples or converting contact into a full hard stop.
     if (Fraction <= 0.001 && Normals.length) {
       Scratch.NormalSum.set(0, 0, 0);
       for (const Normal of Normals) Scratch.NormalSum.add(Normal);
@@ -481,7 +485,9 @@ function MoveCharacter(Camera, ForwardAmount, RightAmount, Distance, Delta, Entr
   Scratch.DesiredDirection.copy(Scratch.Desired).normalize();
   Scratch.Start.copy(Camera.position);
 
-  const SafeRadius = THREE.MathUtils.clamp(Number(Radius) || DefaultRadius, 0.20, 0.32);
+  // Keep the actual body radius supplied by the player model. R98 incorrectly
+  // crushed 0.48m to 0.32m, which is why the visible torso could enter walls.
+  const SafeRadius = THREE.MathUtils.clamp(Number(Radius) || DefaultRadius, 0.34, 0.52);
   const Result = ResolveCharacterMove(Scratch.Start, Scratch.Desired, SafeRadius, CollisionEntries);
 
   Camera.position.x = Result.Position.x;
@@ -525,7 +531,7 @@ const ProceduralPhysics = {
 };
 
 window.__STORE_PROCEDURAL_PHYSICS__ = ProceduralPhysics;
-window.__STORE_PROCEDURAL_PHYSICS_BUILD__ = "V0.35.68-R98-SINGLE-CONTROLLER";
+window.__STORE_PROCEDURAL_PHYSICS_BUILD__ = "V0.35.69-R99-ENGINE-MOVE-SLIDE";
 
 export default ProceduralPhysics;
 export {
