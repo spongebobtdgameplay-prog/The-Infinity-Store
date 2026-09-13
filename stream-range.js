@@ -1,11 +1,11 @@
 export const STREAM_RANGE = Object.freeze({
-  // Keep only the traversal neighborhood live. Two finished aisles ahead are
-  // enough to hide generation without paying to render a fifth populated aisle.
-  ActiveRadius: 2,
+  // Keep a real finished horizon ahead. Two ahead made the cutoff/fog feel fake
+  // and made chunk turnover too obvious while moving through the store.
+  ActiveRadius: 3,
   ActiveBack: 1,
-  ActiveAhead: 2,
+  ActiveAhead: 3,
   PrefetchRadius: 1,
-  BootCount: 3
+  BootCount: 4
 });
 
 export function ChunkRange(CurrentIndex) {
