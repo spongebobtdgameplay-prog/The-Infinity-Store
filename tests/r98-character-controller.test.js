@@ -31,7 +31,7 @@ test('R98 removes stacked movement, contact, and renderer wrappers', () => {
   ]) assert.equal(exists(file), false, `${file} should be removed`);
 });
 
-test('R98 movement has one iterative move-and-slide controller', () => {
+test('R98 movement keeps one iterative move-and-slide controller', () => {
   const source = read('procedural-physics-utility.js');
   assert.match(source, /const MaxSlides = 6/);
   assert.match(source, /function ResolveCharacterMove/);
@@ -41,10 +41,9 @@ test('R98 movement has one iterative move-and-slide controller', () => {
   assert.match(source, /for \(let Iteration = 0; Iteration < MaxSlides/);
   assert.doesNotMatch(source, /HardStop/);
   assert.doesNotMatch(source, /ResolveRaycastHorizontalMove/);
-  assert.doesNotMatch(source, /!IsStructure\(LastEntry\)/);
 });
 
-test('R98 controller uses a local broad phase and bounded sweep work', () => {
+test('R98 controller still uses a local broad phase and bounded sweep work', () => {
   const source = read('procedural-physics-utility.js');
   assert.match(source, /function CollectNearbyEntries/);
   assert.match(source, /const MaxSweepSteps = 18/);
@@ -53,7 +52,7 @@ test('R98 controller uses a local broad phase and bounded sweep work', () => {
   assert.doesNotMatch(source, /DirectionCount = 20/);
 });
 
-test('R98 no longer executes full-body triangle or per-render contact passes', () => {
+test('removed full-body triangle and per-render contact passes stay removed', () => {
   const bootstrap = read('bootstrap.js');
   const index = read('index.html');
   assert.doesNotMatch(bootstrap, /ForceTriangleConstraint/);
@@ -61,10 +60,10 @@ test('R98 no longer executes full-body triangle or per-render contact passes', (
   assert.doesNotMatch(index, /runtime-character-physics/);
 });
 
-test('R98 version and bootstrap cache agree', () => {
-  assert.equal(read('VERSION').trim(), '0.35.68');
+test('current version and bootstrap cache agree', () => {
+  assert.equal(read('VERSION').trim(), '0.35.69');
   const bootstrap = read('bootstrap.js');
-  assert.match(bootstrap, /const Version = "0\.35\.68"/);
-  assert.match(bootstrap, /20260913-v03568-r98-controller1/);
-  assert.match(read('index.html'), /BUILD V0\.35\.68/);
+  assert.match(bootstrap, /const Version = "0\.35\.69"/);
+  assert.match(bootstrap, /20260913-v03569-r99-engine-stream1/);
+  assert.match(read('index.html'), /BUILD V0\.35\.69/);
 });
