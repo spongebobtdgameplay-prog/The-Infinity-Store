@@ -195,7 +195,7 @@ function ProcessInternal(Chunk, Force = false) {
 
 function StabilizeBatchCulling(Chunk) {
   Chunk?.Group?.traverse?.(Object => {
-    if (!Object?.isBatchedMesh || !Object.userData?.EngineRenderBatchR100) return;
+    if (!Object?.isMesh && !Object?.isBatchedMesh) return;
     Object.frustumCulled = true;
     Object.perObjectFrustumCulled = false;
     Object.sortObjects = false;
@@ -204,7 +204,6 @@ function StabilizeBatchCulling(Chunk) {
 
 async function InstallEngineRenderBatch(Chunk) {
   if (!EngineRender?.OptimizeChunkStaticRender || !Chunk?.Group || Chunk.Cancelled) return null;
-  if (window.__STORE_GAMEPLAY_STARTED__ === true) return null;
   const Result = await EngineRender.OptimizeChunkStaticRender(Chunk, {
     Yield: () => WaitForWorkSlice(3, 900)
   });
@@ -239,4 +238,4 @@ ProcessAll();
 
 window.__STORE_CORE_FIX_R86__ = { ProcessAll, ProcessChunk, ProcessChunkAsync };
 window.__STORE_CORE_FIX_R87__ = window.__STORE_CORE_FIX_R86__;
-window.__STORE_CORE_FIX_BUILD__ = "V0.35.71-R101-NO-RUNTIME-BATCH-SPIKE";
+window.__STORE_CORE_FIX_BUILD__ = "V0.35.71-R102-DYNAMIC-CULLING-ENABLED";
