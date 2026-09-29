@@ -1,5 +1,6 @@
 import { WaitForWorkSlice } from "./render-work-budget.js?v=20260907-v03558";
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 import { STREAM_RANGE, ChunkRange } from "./stream-range.js?v=20260907-v03558";
@@ -829,9 +830,26 @@ function CanBatchStaticMesh(Mesh) {
   if (!Mesh?.isMesh || Mesh.isInstancedMesh || Mesh.isSkinnedMesh || !Mesh.geometry || !Mesh.material) return false;
   if (Array.isArray(Mesh.material)) return false;
   if (Mesh.morphTargetInfluences?.length) return false;
+  if (Mesh.geometry.groups?.length) return false;
   if (Mesh.material.transparent && Number(Mesh.material.opacity ?? 1) < 0.995) return false;
   if (Mesh.userData?.NoRenderBatchR104) return false;
   return true;
+}
+
+function GeometryAttributeSignature(Geometry) {
+  if (!Geometry) return "";
+  const Parts = Object.keys(Geometry.attributes || {})
+    .sort()
+    .map(Key => {
+      const Attribute = Geometry.attributes[Key];
+      return [
+        Key,
+        Attribute?.itemSize ?? 0,
+        Attribute?.normalized ? 1 : 0,
+        Attribute?.array?.constructor?.name || ""
+      ].join(":");
+    });
+  return Parts.join("|");
 }
 
 function StaticBatchRoots(Chunk) {
@@ -925,44 +943,120 @@ async function OptimizeChunkStaticRender(Chunk) {
   let BatchIndex = 0;
   let SourceMeshCount = 0;
   const LocalMatrix = new THREE.Matrix4();
+  const MergeCandidates = new Map();
 
   let GroupIndex = 0;
   for (const Group of Groups.values()) {
     GroupIndex += 1;
-    if (Group.Meshes.length < 2) continue;
+    if (Group.Meshes.length >= 2) {
+      const Batch = new THREE.InstancedMesh(
+        Group.Geometry,
+        Group.Material,
+        Group.Meshes.length
+      );
+      Batch.name = `StaticFurnitureBatchR104-${Chunk.Index}-${BatchIndex++}`;
+      Batch.userData.ChunkId = Chunk.Id;
+      Batch.userData.RenderBatchR104 = true;
+      Batch.userData.DecorationNoCollision = true;
+      Batch.castShadow = false;
+      Batch.receiveShadow = false;
+      Batch.frustumCulled = true;
 
-    const Batch = new THREE.InstancedMesh(
-      Group.Geometry,
-      Group.Material,
-      Group.Meshes.length
-    );
-    Batch.name = `StaticFurnitureBatchR104-${Chunk.Index}-${BatchIndex++}`;
-    Batch.userData.ChunkId = Chunk.Id;
-    Batch.userData.RenderBatchR104 = true;
-    Batch.userData.DecorationNoCollision = true;
-    Batch.castShadow = false;
-    Batch.receiveShadow = false;
-    Batch.frustumCulled = true;
+      for (let Index = 0; Index < Group.Meshes.length; Index += 1) {
+        const Mesh = Group.Meshes[Index];
+        Mesh.updateWorldMatrix(true, false);
+        LocalMatrix.multiplyMatrices(ChunkInverse, Mesh.matrixWorld);
+        Batch.setMatrixAt(Index, LocalMatrix);
+      }
 
-    for (let Index = 0; Index < Group.Meshes.length; Index += 1) {
-      const Mesh = Group.Meshes[Index];
-      Mesh.updateWorldMatrix(true, false);
-      LocalMatrix.multiplyMatrices(ChunkInverse, Mesh.matrixWorld);
-      Batch.setMatrixAt(Index, LocalMatrix);
-      Mesh.visible = false;
-      Mesh.userData.RenderBatchedSourceR104 = true;
-      SourceMeshCount += 1;
+      for (const Mesh of Group.Meshes) {
+        Mesh.visible = false;
+        Mesh.userData.RenderBatchedSourceR104 = true;
+      }
+
+      SourceMeshCount += Group.Meshes.length;
+      Batch.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      Batch.instanceMatrix.needsUpdate = true;
+      Batch.computeBoundingBox?.();
+      Batch.computeBoundingSphere?.();
+      Batch.updateMatrix();
+      Batch.matrixAutoUpdate = false;
+      Chunk.Group.add(Batch);
+    } else if (Group.Meshes.length === 1) {
+      const Mesh = Group.Meshes[0];
+      const GeometryKey =
+        `${Group.Material ? BatchMaterialSignature(Group.Material) : ""}|${GeometryAttributeSignature(Mesh.geometry)}|${Group.SpatialKey || ""}`;
+      const Candidate = MergeCandidates.get(GeometryKey) || {
+        Material: Group.Material,
+        Meshes: []
+      };
+      Candidate.Meshes.push(Mesh);
+      MergeCandidates.set(GeometryKey, Candidate);
     }
 
-    Batch.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-    Batch.instanceMatrix.needsUpdate = true;
-    Batch.computeBoundingBox?.();
-    Batch.computeBoundingSphere?.();
-    Batch.updateMatrix();
-    Batch.matrixAutoUpdate = false;
-    Chunk.Group.add(Batch);
-
     if (GroupIndex % 2 === 0) await RenderBatchYield();
+  }
+
+  for (const Candidate of MergeCandidates.values()) {
+    for (let Offset = 0; Offset < Candidate.Meshes.length; Offset += 64) {
+      const Meshes = Candidate.Meshes.slice(Offset, Offset + 64);
+      if (Meshes.length < 2) continue;
+
+      const Geometries = [];
+      let CanMerge = true;
+
+      for (const Mesh of Meshes) {
+        try {
+          Mesh.updateWorldMatrix(true, false);
+          LocalMatrix.multiplyMatrices(ChunkInverse, Mesh.matrixWorld);
+          const Geometry = Mesh.geometry.clone();
+          Geometry.applyMatrix4(LocalMatrix);
+          Geometries.push(Geometry);
+        } catch {
+          CanMerge = false;
+          break;
+        }
+      }
+
+      if (!CanMerge || Geometries.length < 2) {
+        for (const Geometry of Geometries) Geometry.dispose?.();
+        continue;
+      }
+
+      let Merged = null;
+      try {
+        Merged = mergeGeometries(Geometries, false);
+      } catch {}
+
+      for (const Geometry of Geometries) {
+        if (Geometry !== Merged) Geometry.dispose?.();
+      }
+
+      if (!Merged) continue;
+
+      Merged.computeBoundingBox?.();
+      Merged.computeBoundingSphere?.();
+
+      const Batch = new THREE.Mesh(Merged, Candidate.Material);
+      Batch.name = `StaticMergedBatchR104-${Chunk.Index}-${BatchIndex++}`;
+      Batch.userData.ChunkId = Chunk.Id;
+      Batch.userData.RenderBatchR104 = true;
+      Batch.userData.DecorationNoCollision = true;
+      Batch.castShadow = false;
+      Batch.receiveShadow = false;
+      Batch.frustumCulled = true;
+      Batch.matrixAutoUpdate = false;
+      Batch.updateMatrix();
+      Chunk.Group.add(Batch);
+
+      for (const Mesh of Meshes) {
+        Mesh.visible = false;
+        Mesh.userData.RenderBatchedSourceR104 = true;
+      }
+
+      SourceMeshCount += Meshes.length;
+      if (BatchIndex % 2 === 0) await RenderBatchYield();
+    }
   }
 
   for (let RootIndex = 0; RootIndex < Roots.length; RootIndex += 1) {
