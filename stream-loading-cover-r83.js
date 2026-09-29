@@ -37,10 +37,18 @@ function PrioritizeIndex(Index) {
 
 function CandidateIndices(CurrentIndex) {
   const Candidates = [{ Index: CurrentIndex, Offset: 0 }];
-  for (let Offset = 1; Offset <= Game.StreamRange.PrefetchRadius; Offset += 1) {
+
+  for (let Offset = 1; Offset <= Game.StreamRange.ActiveAhead; Offset += 1) {
     Candidates.push({ Index: CurrentIndex + Offset, Offset });
-    if (CurrentIndex - Offset >= 0) Candidates.push({ Index: CurrentIndex - Offset, Offset });
   }
+
+  for (let Offset = 1; Offset <= Game.StreamRange.PrefetchRadius; Offset += 1) {
+    Candidates.push({
+      Index: CurrentIndex + Game.StreamRange.ActiveAhead + Offset,
+      Offset: Game.StreamRange.ActiveAhead + Offset
+    });
+  }
+
   return Candidates;
 }
 
@@ -90,4 +98,4 @@ window.__STORE_STREAM_LOADING_R83__ = {
   IsTraversalReady,
   IsAlreadyVisible
 };
-window.__STORE_STREAM_LOADING_BUILD__ = "V0.35.60-R90-THROTTLED-PREFETCH";
+window.__STORE_STREAM_LOADING_BUILD__ = "V0.35.76-FORWARD-BUFFER";
