@@ -94,6 +94,7 @@ let LastChunkMaintenanceAt = -Infinity;
 let LastMaintainedChunkIndex = Number.NaN;
 let LastObjectStreamAt = -Infinity;
 let HasObjectStreamCameraState = false;
+let LastRearDetailCullIndex = Number.NaN;
 const LastObjectStreamCameraPosition = new THREE.Vector3();
 const LastObjectStreamCameraForward = new THREE.Vector3();
 const StreamProjectionView = new THREE.Matrix4();
@@ -1819,12 +1820,38 @@ function UpdateChunkVisibility() {
   }
 }
 
+function ApplyRearDetailBudget(CurrentIndex) {
+  if (LastRearDetailCullIndex === CurrentIndex) return;
+  LastRearDetailCullIndex = CurrentIndex;
+
+  for (const Chunk of ActiveChunks.values()) {
+    if (!Chunk?.Group || Chunk.Cancelled) continue;
+    const HideDetails = Chunk.Index <= CurrentIndex - 2;
+
+    for (const Object of Chunk.Group.children || []) {
+      if (!Object || IsStructuralStreamObject(Object) || Object.name === "StoreTask") continue;
+
+      if (HideDetails) {
+        Object.visible = false;
+        Object.userData.RearDetailCulledR106 = true;
+        continue;
+      }
+
+      if (Object.userData?.RearDetailCulledR106) {
+        Object.visible = Object.userData.ObjectStreamCulledR101 !== true;
+        delete Object.userData.RearDetailCulledR106;
+      }
+    }
+  }
+}
+
 function EnsureChunksAroundPlayer() {
   const CurrentIndex = Math.max(0, ChunkIndexForZ(Camera.position.z));
   const Now = performance.now();
 
   MarkViewedChunks(Now);
   UpdateObjectStreaming(Now);
+  ApplyRearDetailBudget(CurrentIndex);
 
   if (CurrentIndex === LastMaintainedChunkIndex && Now - LastChunkMaintenanceAt < 120) {
     UpdateChunkVisibility();
