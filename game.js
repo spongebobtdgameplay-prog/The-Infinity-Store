@@ -1897,10 +1897,16 @@ function ObjectIntersectsView(Object) {
 }
 
 function UpdateObjectStreaming() {
-  // Do not hide complete furniture roots based on camera direction/distance.
-  // Three.js already frustum-culls each mesh; root-level streaming created
-  // visible holes and made furniture pop back in as the player turned.
-  return;
+  // Do not hide complete furniture roots. Renderer-level mesh frustum culling
+  // handles off-screen geometry without making furniture pop in and out.
+  for (const Chunk of ActiveChunks.values()) {
+    if (!Chunk?.Group || Chunk.Cancelled) continue;
+    for (const Object of Chunk.StreamableRootsR101 || []) {
+      if (Object?.userData?.ObjectStreamCulledR101) {
+        Object.userData.ObjectStreamCulledR101 = false;
+      }
+    }
+  }
 }
 
 function RestoreChunkStreamObjects() {
@@ -1908,22 +1914,23 @@ function RestoreChunkStreamObjects() {
 }
 
 function UpdateChunkVisibility() {
+  // Keep every active aisle mounted. Three.js performs per-mesh frustum
+  // culling, while parent-level visibility created hard visual pop/cutoff
+  // points and also made point lights disappear when the camera turned.
   for (const Chunk of ActiveChunks.values()) {
-    if (!Chunk?.Group) continue;
-    const InView = ChunkIntersectsView(Chunk);
-    const NearestZ = THREE.MathUtils.clamp(Camera.position.z, Chunk.BottomZ, Chunk.TopZ);
-    const InRange = Math.abs(Camera.position.z - NearestZ) <= (Scene.fog?.far || Camera.far);
-    const Visible = InView && InRange;
-    Chunk.Group.visible = Visible;
+    if (!Chunk?.Group || Chunk.Cancelled) continue;
+    Chunk.Group.visible = true;
+
     for (const Object of Chunk.ExternalObjects || []) {
-      if (Object && !Object.userData?.StreamAmbientR101 && !Object.isLight) Object.visible = Visible;
+      if (!Object || Object.userData?.StreamAmbientR101 || Object.isLight) continue;
+      Object.visible = true;
     }
   }
 }
 
 function ApplyRearDetailBudget() {
-  // Keep the active aisle fully dressed. Far-detail reduction is handled by
-  // static draw-call batching instead of hiding whole furniture roots.
+  // Keep complete aisle detail visible; optimize draw calls without hiding
+  // merchandise roots so the store never exposes a blank streamed chunk.
   return;
 }
 
@@ -1973,16 +1980,31 @@ function EnsureChunksAroundPlayer() {
     }
   }
 
-  for (const Index of [...ActiveChunks.keys()]) {
-    if (WantedActive.has(Index)) continue;
-    const Chunk = ActiveChunks.get(Index);
+  const FullForwardHorizonReady = (() => {
+    for (let Offset = 0; Offset <= STREAM_RANGE.ActiveAhead; Offset += 1) {
+      const Candidate = ActiveChunks.get(CurrentIndex + Offset);
+      if (!Candidate?.Ready || Candidate.Cancelled || Candidate.Group?.parent !== Scene) {
+        return false;
+      }
+    }
+    return true;
+  })();
 
-    const KeepPrepared =
-      Index >= Math.max(0, CurrentIndex - PREPARED_BACK_CACHE) &&
-      Index <= PrefetchMax;
+  // Hold the old aisle until the replacement forward horizon is actually
+  // active. This prevents the player from seeing a streamed-out hole during
+  // a generation stall.
+  if (FullForwardHorizonReady) {
+    for (const Index of [...ActiveChunks.keys()]) {
+      if (WantedActive.has(Index)) continue;
+      const Chunk = ActiveChunks.get(Index);
 
-    if (Chunk) RestoreChunkStreamObjects(Chunk);
-    DeactivateChunk(Index, KeepPrepared);
+      const KeepPrepared =
+        Index >= Math.max(0, CurrentIndex - PREPARED_BACK_CACHE) &&
+        Index <= PrefetchMax;
+
+      if (Chunk) RestoreChunkStreamObjects(Chunk);
+      DeactivateChunk(Index, KeepPrepared);
+    }
   }
 
   for (const Index of [...PreparedChunks.keys()]) {
