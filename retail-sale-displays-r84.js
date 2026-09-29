@@ -52,7 +52,7 @@ async function LoadTemplate(Key) {
       for (let Index = 0; Index < Urls.length; Index += 1) {
         try {
           const Data = await Loader.loadAsync(Urls[Index]);
-          const Root = Data.scene;
+          const Root = Data.scene.clone(true);
           Root.name = `RetailSaleTemplateR84-${Key}`;
           CloneMaterials(Root);
 
