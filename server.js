@@ -13,7 +13,7 @@ const { Pool } = pg;
 const PORT = Number(process.env.PORT) || 3000;
 const DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const NODE_ENV = String(process.env.NODE_ENV || "development");
-const SERVER_VERSION = "0.3.4";
+const SERVER_VERSION = "0.3.5";
 const NETWORK_PROTOCOL = 1;
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 6;
@@ -43,8 +43,21 @@ const SOCKET_PING_WINDOW_MS = 60_000;
 const SOCKET_PING_LIMIT = 30;
 
 if (!DATABASE_URL) {
-  throw new Error("DATABASE_URL is required. Add the Render Postgres Internal Database URL to the web service environment.");
+  throw new Error("DATABASE_URL is required. Add your PostgreSQL connection string to the web service environment.");
 }
+
+function BuildDatabaseConnectionString(Value) {
+  try {
+    const Url = new URL(Value);
+    Url.searchParams.delete("sslmode");
+    Url.searchParams.delete("channel_binding");
+    return Url.toString();
+  } catch {
+    return Value;
+  }
+}
+
+const DatabaseConnectionString = BuildDatabaseConnectionString(DATABASE_URL);
 
 const DEFAULT_ORIGINS = [
   "https://spongebobtdgameplay-prog.github.io",
@@ -64,16 +77,20 @@ function OriginAllowed(Origin) {
   return CLIENT_ORIGINS.has(Origin);
 }
 
+function IsLocalDatabaseUrl(Value) {
+  return /^(postgres|postgresql):\/\/(localhost|127\.0\.0\.1)(?::\\d+)?(?:\/|$)/i.test(Value);
+}
+
 function ShouldUseSSL() {
-  if (/^(postgres|postgresql):\/\/(localhost|127\.0\.0\.1)/i.test(DATABASE_URL)) return false;
+  if (IsLocalDatabaseUrl(DATABASE_URL)) return false;
   if (process.env.PGSSL === "false") return false;
-  if (process.env.PGSSL === "true") return true;
-  return /[?&]sslmode=(require|verify-ca|verify-full)/i.test(DATABASE_URL);
+  return true;
 }
 
 const Database = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: ShouldUseSSL() ? { rejectUnauthorized: false } : false,
+  connectionString: DatabaseConnectionString,
+  ssl: ShouldUseSSL() ? { rejectUnauthorized: true } : false,
+  enableChannelBinding: !IsLocalDatabaseUrl(DATABASE_URL) && process.env.PGCHANNELBINDING !== "false",
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
@@ -278,8 +295,18 @@ const AuthLimiter = rateLimit({
   limit: 12,
   standardHeaders: "draft-8",
   legacyHeaders: false,
+  skipSuccessfulRequests: false,
   message: { ok: false, error: "TOO_MANY_ATTEMPTS" }
 });
+
+const AuthHeaders = (_Request, Response, Next) => {
+  Response.set("Cache-Control", "no-store");
+  Response.set("Pragma", "no-cache");
+  Response.set("X-Content-Type-Options", "nosniff");
+  return Next();
+};
+
+App.use("/api/auth", AuthHeaders);
 
 const PublicInfoLimiter = rateLimit({
   windowMs: 60_000,
