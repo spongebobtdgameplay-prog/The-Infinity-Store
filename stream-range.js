@@ -6,6 +6,8 @@ export const STREAM_RANGE = Object.freeze({
   ActiveAhead: 3,
   // Prefetch through the full active horizon so the next new aisle is built
   // while the player is still one aisle or more away from reaching it.
+  // Keep a detached forward buffer beyond the three live aisles so the next
+  // aisle is generated before the player can reach the streaming edge.
   PrefetchRadius: 3,
   BootCount: 4
 });
@@ -15,6 +17,6 @@ export function ChunkRange(CurrentIndex) {
     ActiveMin: Math.max(0, CurrentIndex - STREAM_RANGE.ActiveBack),
     ActiveMax: CurrentIndex + STREAM_RANGE.ActiveAhead,
     PrepareMin: Math.max(0, CurrentIndex - STREAM_RANGE.PrefetchRadius),
-    PrepareMax: CurrentIndex + STREAM_RANGE.ActiveAhead
+    PrepareMax: CurrentIndex + STREAM_RANGE.ActiveAhead + STREAM_RANGE.PrefetchRadius
   };
 }
