@@ -151,7 +151,10 @@ function AssetLabel(Url) {
 function DispatchProgress() {
   let Loaded = 0;
   let Failed = 0;
-  for (const State of AssetStates.values()) {
+  // Count only the declared warm-up manifest. Runtime-only assets must not
+  // inflate the boot percentage above 100%.
+  for (const Url of AssetUrls) {
+    const State = AssetStates.get(Url);
     if (State === "loaded") Loaded += 1;
     else if (State === "failed") Failed += 1;
   }
