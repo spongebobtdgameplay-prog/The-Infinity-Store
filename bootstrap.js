@@ -1,5 +1,5 @@
-const Cache = "20260929-v03577-stable-handoff-drs";
-const Version = "0.35.77";
+const Cache = "20260929-v03578-fixed-ratio-progress";
+const Version = "0.35.78";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
   { rel: "icon", type: "image/png", sizes: "32x32", href: `favicon_io/favicon-32x32.png?v=${FaviconVersion}` },
@@ -64,7 +64,10 @@ let LastWorldTotal = 4;
 function SetWorldProgress(Ready, Total, Stage = "", Detail = "") {
   const SafeTotal = Math.max(1, Number(Total) || 1);
   const SafeReady = Clamp(Number(Ready) || 0, 0, SafeTotal);
-  const Percent = Math.round((SafeReady / SafeTotal) * 100);
+  const RawPercent = Math.round((SafeReady / SafeTotal) * 100);
+  // 100% means the world has passed its final readiness gate, not merely
+  // that the required aisle count reached 4/4.
+  const Percent = StartGate.WorldReady ? RawPercent : Math.min(99, RawPercent);
   LastWorldReady = Math.max(0, Math.floor(SafeReady));
   LastWorldTotal = Math.max(1, Math.floor(SafeTotal));
 
