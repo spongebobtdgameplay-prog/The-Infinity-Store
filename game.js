@@ -1958,10 +1958,18 @@ function EnsureChunksAroundPlayer() {
 
   // Prepare every index in both directions; requesting only the farthest
   // index left holes in the buffer and discarded useful returning aisles.
+  // Generate future aisles outside the live horizon while the player is
+  // still several aisles away. These chunks stay detached, so they do not
+  // increase draw calls until they are actually needed.
   for (let Offset = 1; Offset <= STREAM_RANGE.PrefetchRadius; Offset += 1) {
-    for (const Index of [CurrentIndex + Offset, CurrentIndex - Offset]) {
-      if (Index < PrepareMin || Index > PrefetchMax || WantedActive.has(Index)) continue;
-      RequestChunk(Index).catch(() => {});
+    const ForwardIndex = CurrentIndex + STREAM_RANGE.ActiveAhead + Offset;
+    if (ForwardIndex >= PrepareMin && ForwardIndex <= PrefetchMax && !WantedActive.has(ForwardIndex)) {
+      RequestChunk(ForwardIndex).catch(() => {});
+    }
+
+    const BackIndex = CurrentIndex - STREAM_RANGE.ActiveBack - Offset;
+    if (BackIndex >= PrepareMin && BackIndex <= PrefetchMax && !WantedActive.has(BackIndex)) {
+      RequestChunk(BackIndex).catch(() => {});
     }
   }
 
