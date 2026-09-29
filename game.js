@@ -488,12 +488,12 @@ function AddPartition(Chunk, X, Z, Length = 3.3) {
   Box("PartitionBase", new THREE.Vector3(0.22, 0.11, Length + 0.06), new THREE.Vector3(X, 0.055, Z), TrimMaterial, Chunk);
 }
 
-function AddLightFixture(Chunk, X, Z, Broken = false) {
+function AddLightFixture(Chunk, X, Z, Broken = false, Primary = false) {
   Box("LightHousing", new THREE.Vector3(3.4, 0.08, 0.42), new THREE.Vector3(X, 3.56, Z), LightHousingMaterial, Chunk);
   const GlowMaterial = PanelGlowMaterial.clone();
   if (Broken) GlowMaterial.color.setHex(0x3b352e);
   Box("LightGlow", new THREE.Vector3(3.05, 0.050, 0.22), new THREE.Vector3(X, 3.495, Z), GlowMaterial, Chunk);
-  if (!Broken && Math.abs(X) < 1) {
+  if (!Broken && Primary && Math.abs(X) < 1) {
     const Light = new THREE.PointLight(0xffe3b1, 1.75, 14, 1.85);
     Light.position.set(X, 3.12, Z);
     Light.userData.BaseIntensity = 1.75;
@@ -1249,7 +1249,7 @@ function CreatePreparedChunk(Index) {
     }
   }
 
-  for (const Offset of [-9.0, 0, 9.0]) AddLightFixture(Chunk, 0, CenterZ + Offset, SeededRandom(Seed + Offset * 3) > 0.88);
+  for (const Offset of [-9.0, 0, 9.0]) AddLightFixture(Chunk, 0, CenterZ + Offset, SeededRandom(Seed + Offset * 3) > 0.88, Offset === 0);
   for (const Offset of [-7.5, 7.5]) {
     AddLightFixture(Chunk, -9.0, CenterZ + Offset, SeededRandom(Seed + Offset * 4) > 0.84);
     AddLightFixture(Chunk, 9.0, CenterZ - Offset, SeededRandom(Seed + Offset * 5) > 0.84);
