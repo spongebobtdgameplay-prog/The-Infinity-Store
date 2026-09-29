@@ -492,7 +492,7 @@ function AddLightFixture(Chunk, X, Z, Broken = false) {
   Box("LightHousing", new THREE.Vector3(3.4, 0.08, 0.42), new THREE.Vector3(X, 3.56, Z), LightHousingMaterial, Chunk);
   const GlowMaterial = PanelGlowMaterial.clone();
   if (Broken) GlowMaterial.color.setHex(0x3b352e);
-  Box("LightGlow", new THREE.Vector3(3.05, 0.018, 0.22), new THREE.Vector3(X, 3.51, Z), GlowMaterial, Chunk);
+  Box("LightGlow", new THREE.Vector3(3.05, 0.050, 0.22), new THREE.Vector3(X, 3.495, Z), GlowMaterial, Chunk);
   if (!Broken && Math.abs(X) < 1) {
     const Light = new THREE.PointLight(0xffe3b1, 1.75, 14, 1.85);
     Light.position.set(X, 3.12, Z);
