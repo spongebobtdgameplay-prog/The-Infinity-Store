@@ -338,7 +338,7 @@ const ModelDefinitions = {
   Shelf_Large: { Url: IndustrialShelfUrl, Axis: "y", Target: 2.08, PreserveMaterials: true },
   Bookshelf: { Url: IndustrialShelfUrl, Axis: "y", Target: 2.02, PreserveMaterials: true },
   Kitchen_Cabinet1: { Url: `${KayKitFurnitureBase}cabinet_medium.gltf`, Axis: "y", Target: 0.91, PreserveMaterials: true },
-  Kitchen_Fridge: { Url: "Models/Kitchen/GLB/Kitchen_Fridge.glb", Axis: "y", Target: 1.86 },
+  Kitchen_Fridge: { Url: null, Axis: "y", Target: 1.86, Procedural: true },
   Kitchen_Oven: { Url: `${KayKitRestaurantBase}stove_multi_decorated.gltf`, Axis: "y", Target: 0.94, PreserveMaterials: true },
   Kitchen_Sink: { Url: `${KayKitRestaurantBase}kitchencounter_sink.gltf`, Axis: "y", Target: 0.90, PreserveMaterials: true },
   Bathroom_Sink: { Url: `${KayKitRestaurantBase}kitchentable_sink.gltf`, Axis: "y", Target: 0.84, PreserveMaterials: true },
@@ -593,6 +593,77 @@ function PrepareModel(Name, Model) {
   Model.updateMatrixWorld(true);
 }
 
+function CreateProceduralFridgeTemplate() {
+  const Group = new THREE.Group();
+  Group.name = "KitchenFridgeProcedural";
+
+  const WhiteTexture = CreateTexture(256, 1, 2, (Context, Size) => {
+    Context.fillStyle = "#f2f1ec";
+    Context.fillRect(0, 0, Size, Size);
+    Context.globalAlpha = 0.10;
+    Context.fillStyle = "#ffffff";
+    for (let X = 0; X <= Size; X += 7) Context.fillRect(X, 0, 1, Size);
+    Context.globalAlpha = 0.06;
+    Context.fillStyle = "#b9b8b1";
+    for (let X = 3; X <= Size; X += 11) Context.fillRect(X, 0, 1, Size);
+    Context.globalAlpha = 1;
+  });
+  const BodyMaterial = new THREE.MeshStandardMaterial({
+    map: WhiteTexture,
+    color: 0xffffff,
+    roughness: 0.58,
+    metalness: 0.08
+  });
+  const DoorMaterial = new THREE.MeshStandardMaterial({
+    map: WhiteTexture,
+    color: 0xf7f6f1,
+    roughness: 0.52,
+    metalness: 0.10
+  });
+  const HandleMaterial = new THREE.MeshStandardMaterial({
+    map: SteelTexture,
+    color: 0xdfe2e0,
+    roughness: 0.34,
+    metalness: 0.64
+  });
+  const SeamMaterial = new THREE.MeshBasicMaterial({ color: 0xc9c8c2 });
+
+  const Body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.92, 1.86, 0.76),
+    BodyMaterial
+  );
+  Body.name = "FridgeBody";
+  Body.position.y = 0.93;
+  Group.add(Body);
+
+  const Door = new THREE.Mesh(
+    new THREE.BoxGeometry(0.84, 1.72, 0.035),
+    DoorMaterial
+  );
+  Door.name = "FridgeDoor";
+  Door.position.set(0, 0.95, 0.401);
+  Group.add(Door);
+
+  const FreezerSeam = new THREE.Mesh(
+    new THREE.BoxGeometry(0.80, 0.022, 0.045),
+    SeamMaterial
+  );
+  FreezerSeam.name = "FridgeFreezerSeam";
+  FreezerSeam.position.set(0, 1.30, 0.424);
+  Group.add(FreezerSeam);
+
+  const Handle = new THREE.Mesh(
+    new THREE.BoxGeometry(0.035, 0.66, 0.045),
+    HandleMaterial
+  );
+  Handle.name = "FridgeHandle";
+  Handle.position.set(0.31, 1.00, 0.432);
+  Group.add(Handle);
+
+  Group.updateMatrixWorld(true);
+  return Group;
+}
+
 function NormalizeSupportModel(Model, Width, Height, Depth) {
   Model.updateMatrixWorld(true);
   const Bounds = new THREE.Box3().setFromObject(Model);
@@ -671,9 +742,14 @@ async function GetModelTemplate(Name) {
 
   if (!ModelCache.has(Name)) {
     const Pending = (async () => {
-      const Gltf = await LoadModelWithTimeout(Name, Definition);
-      const Fixture = Gltf.scene.clone(true);
-      PrepareModel(Name, Fixture);
+      let Fixture;
+      if (Definition.Procedural) {
+        Fixture = CreateProceduralFridgeTemplate();
+      } else {
+        const Gltf = await LoadModelWithTimeout(Name, Definition);
+        Fixture = Gltf.scene.clone(true);
+        PrepareModel(Name, Fixture);
+      }
 
       if (!Definition.SupportModel) return Fixture;
 
@@ -770,11 +846,21 @@ function StaticBatchRoots(Chunk) {
 
   for (const Model of Chunk.Models || []) Add(Model);
   for (const Object of Chunk.Group?.children || []) {
+    if (IsStructuralStreamObject(Object)) continue;
+    if (IsPersistentCollisionRenderRoot(Object)) continue;
+
+    const Data = Object?.userData || {};
+    const Name = String(Object?.name || "");
     if (
-      Object?.userData?.RetailImportedR79 ||
-      Object?.userData?.RetailSellableR84 ||
-      Object?.userData?.ShelfStockR83
-    ) Add(Object);
+      Data.CompactPriceAuthorityR83 ||
+      Name.startsWith("FurniturePriceSignR72") ||
+      Name.startsWith("FurniturePriceSignR73") ||
+      Name.startsWith("FurnitureItemSignR74-") ||
+      Name.startsWith("FurnitureItemSignR80-") ||
+      Name === "StoreTask"
+    ) continue;
+
+    Add(Object);
   }
 
   return Roots;
@@ -1716,94 +1802,15 @@ function ObjectIntersectsView(Object) {
   return Bounds?.isBox3 ? StreamFrustum.intersectsBox(Bounds) : false;
 }
 
-function UpdateObjectStreaming(Now = performance.now(), Force = false) {
-  if (!Force && Now - LastObjectStreamAt < OBJECT_STREAM_INTERVAL_MS) return;
-
-  UpdateStreamFrustum();
-
-  if (!Force && HasObjectStreamCameraState) {
-    const PositionMoved = LastObjectStreamCameraPosition.distanceToSquared(Camera.position);
-    const DirectionChanged = LastObjectStreamCameraForward.dot(StreamCameraForward);
-    if (PositionMoved < 0.18 && DirectionChanged > 0.994) {
-      LastObjectStreamAt = Now;
-      return;
-    }
-  }
-
-  LastObjectStreamAt = Now;
-  HasObjectStreamCameraState = true;
-  LastObjectStreamCameraPosition.copy(Camera.position);
-  LastObjectStreamCameraForward.copy(StreamCameraForward);
-
-  for (const Chunk of ActiveChunks.values()) {
-    if (!Chunk?.Group || Chunk.Cancelled || Chunk.Group.parent !== Scene) continue;
-    if (!Chunk.Group.userData?.PresentationReadyR83) continue;
-
-    for (const Object of StreamableRoots(Chunk)) {
-      if (!Object?.parent) continue;
-
-      const Bounds = ObjectStreamBounds(Object);
-      Bounds.getCenter(StreamObjectPosition);
-
-      StreamToObject.copy(StreamObjectPosition).sub(Camera.position);
-      StreamToObject.y = 0;
-      const DistanceSq = StreamToObject.lengthSq();
-      const IsPriceTag = Boolean(Object.userData?.CompactPriceAuthorityR83);
-
-      if (
-        IsPriceTag &&
-        DistanceSq > PRICE_TAG_STREAM_DISTANCE * PRICE_TAG_STREAM_DISTANCE
-      ) {
-        SetObjectStreamCulled(Object, true);
-        continue;
-      }
-
-      const VisibleNow = StreamFrustum.intersectsBox(Bounds);
-
-      if (
-        VisibleNow ||
-        DistanceSq <= OBJECT_STREAM_NEAR_DISTANCE * OBJECT_STREAM_NEAR_DISTANCE
-      ) {
-        SetObjectStreamCulled(Object, false);
-        continue;
-      }
-
-      const Distance = Math.sqrt(Math.max(0.000001, DistanceSq));
-      const Dot = (
-        StreamToObject.x * StreamCameraForward.x +
-        StreamToObject.z * StreamCameraForward.z
-      ) / Distance;
-
-      const Culled = Boolean(Object.userData?.ObjectStreamCulledR101);
-      if (Culled) {
-        const PreView =
-          Dot > -0.28 ||
-          Distance <= OBJECT_STREAM_NEAR_DISTANCE + 12;
-
-        if (PreView) SetObjectStreamCulled(Object, false);
-        continue;
-      }
-
-      const DeepBehind =
-        Distance > OBJECT_STREAM_NEAR_DISTANCE + 12 &&
-        Dot < -0.48;
-      const FarOutsideView =
-        Distance > OBJECT_STREAM_FAR_DISTANCE &&
-        Dot < 0.06;
-
-      if (DeepBehind || FarOutsideView) {
-        SetObjectStreamCulled(Object, true);
-      }
-    }
-  }
+function UpdateObjectStreaming() {
+  // Do not hide complete furniture roots based on camera direction/distance.
+  // Three.js already frustum-culls each mesh; root-level streaming created
+  // visible holes and made furniture pop back in as the player turned.
+  return;
 }
 
-function RestoreChunkStreamObjects(Chunk) {
-  for (const Object of StreamableRoots(Chunk)) {
-    if (Object?.userData?.ObjectStreamCulledR101) {
-      SetObjectStreamCulled(Object, false);
-    }
-  }
+function RestoreChunkStreamObjects() {
+  return;
 }
 
 function UpdateChunkVisibility() {
@@ -1820,29 +1827,10 @@ function UpdateChunkVisibility() {
   }
 }
 
-function ApplyRearDetailBudget(CurrentIndex) {
-  if (LastRearDetailCullIndex === CurrentIndex) return;
-  LastRearDetailCullIndex = CurrentIndex;
-
-  for (const Chunk of ActiveChunks.values()) {
-    if (!Chunk?.Group || Chunk.Cancelled) continue;
-    const HideDetails = Chunk.Index <= CurrentIndex - 2;
-
-    for (const Object of Chunk.Group.children || []) {
-      if (!Object || IsStructuralStreamObject(Object) || Object.name === "StoreTask") continue;
-
-      if (HideDetails) {
-        Object.visible = false;
-        Object.userData.RearDetailCulledR106 = true;
-        continue;
-      }
-
-      if (Object.userData?.RearDetailCulledR106) {
-        Object.visible = Object.userData.ObjectStreamCulledR101 !== true;
-        delete Object.userData.RearDetailCulledR106;
-      }
-    }
-  }
+function ApplyRearDetailBudget() {
+  // Keep the active aisle fully dressed. Far-detail reduction is handled by
+  // static draw-call batching instead of hiding whole furniture roots.
+  return;
 }
 
 function EnsureChunksAroundPlayer() {
