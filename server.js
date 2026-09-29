@@ -299,6 +299,93 @@ const AuthLimiter = rateLimit({
   message: { ok: false, error: "TOO_MANY_ATTEMPTS" }
 });
 
+const LOGIN_IP_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_ACCOUNT_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_IP_MAX_FAILURES = 10;
+const LOGIN_ACCOUNT_MAX_FAILURES = 8;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const LOGIN_DELAY_BASE_MS = 400;
+const LOGIN_DELAY_MAX_MS = 5000;
+const LOGIN_FAILURE_CLEANUP_MS = 5 * 60 * 1000;
+const LOGIN_GENERIC_ERROR = "INVALID_LOGIN";
+const LOGIN_FAILURES_BY_IP = new Map();
+const LOGIN_FAILURES_BY_ACCOUNT = new Map();
+
+function LoginClientIp(Request) {
+  return String(Request.ip || Request.socket?.remoteAddress || "unknown").slice(0, 128);
+}
+
+function HashLoginKey(Value) {
+  return crypto.createHash("sha256").update(String(Value)).digest("hex");
+}
+
+function ReadLoginFailure(Store, Key, WindowMs) {
+  const Existing = Store.get(Key);
+  if (!Existing) return { failures: 0, lockedUntil: 0 };
+  const Now = Date.now();
+  if (Now - Existing.startedAt >= WindowMs) {
+    Store.delete(Key);
+    return { failures: 0, lockedUntil: 0 };
+  }
+  return Existing;
+}
+
+function GetLoginThrottleInfo(IpKey, AccountKey) {
+  const IpState = ReadLoginFailure(LOGIN_FAILURES_BY_IP, IpKey, LOGIN_IP_WINDOW_MS);
+  const AccountState = ReadLoginFailure(LOGIN_FAILURES_BY_ACCOUNT, AccountKey, LOGIN_ACCOUNT_WINDOW_MS);
+  return {
+    failures: Math.max(IpState.failures, AccountState.failures),
+    lockedUntil: Math.max(IpState.lockedUntil || 0, AccountState.lockedUntil || 0)
+  };
+}
+
+function RecordLoginFailure(Store, Key, WindowMs, MaxFailures) {
+  const Now = Date.now();
+  const Existing = ReadLoginFailure(Store, Key, WindowMs);
+  const NextFailures = Existing.failures + 1;
+  Store.set(Key, {
+    startedAt: Existing.failures ? Existing.startedAt : Now,
+    failures: NextFailures,
+    lockedUntil: NextFailures >= MaxFailures ? Now + LOGIN_LOCKOUT_MS : Existing.lockedUntil || 0
+  });
+}
+
+function RecordLoginFailureFor(IpKey, AccountKey) {
+  RecordLoginFailure(LOGIN_FAILURES_BY_IP, IpKey, LOGIN_IP_WINDOW_MS, LOGIN_IP_MAX_FAILURES);
+  RecordLoginFailure(LOGIN_FAILURES_BY_ACCOUNT, AccountKey, LOGIN_ACCOUNT_WINDOW_MS, LOGIN_ACCOUNT_MAX_FAILURES);
+}
+
+function ClearLoginFailures(IpKey, AccountKey) {
+  LOGIN_FAILURES_BY_IP.delete(IpKey);
+  LOGIN_FAILURES_BY_ACCOUNT.delete(AccountKey);
+}
+
+function LoginDelayMs(Failures) {
+  if (Failures <= 0) return 0;
+  const Exponent = Math.min(4, Failures - 1);
+  const Base = Math.min(LOGIN_DELAY_MAX_MS, LOGIN_DELAY_BASE_MS * (2 ** Exponent));
+  return Math.min(LOGIN_DELAY_MAX_MS, Base + crypto.randomInt(0, 251));
+}
+
+function Sleep(Milliseconds) {
+  return Milliseconds > 0 ? new Promise(Resolve => setTimeout(Resolve, Milliseconds)) : Promise.resolve();
+}
+
+const LoginFailureCleanupInterval = setInterval(() => {
+  const Now = Date.now();
+  for (const [Key, State] of LOGIN_FAILURES_BY_IP) {
+    if (Now - State.startedAt >= LOGIN_IP_WINDOW_MS && Now >= (State.lockedUntil || 0)) {
+      LOGIN_FAILURES_BY_IP.delete(Key);
+    }
+  }
+  for (const [Key, State] of LOGIN_FAILURES_BY_ACCOUNT) {
+    if (Now - State.startedAt >= LOGIN_ACCOUNT_WINDOW_MS && Now >= (State.lockedUntil || 0)) {
+      LOGIN_FAILURES_BY_ACCOUNT.delete(Key);
+    }
+  }
+}, LOGIN_FAILURE_CLEANUP_MS);
+LoginFailureCleanupInterval.unref?.();
+
 const AuthHeaders = (_Request, Response, Next) => {
   Response.set("Cache-Control", "no-store");
   Response.set("Pragma", "no-cache");
@@ -1164,7 +1251,10 @@ async function Shutdown(Signal) {
   console.log(`${Signal} received; shutting down.`);
   clearInterval(SessionCleanupInterval);
   clearInterval(AbuseCleanupInterval);
+  clearInterval(LoginFailureCleanupInterval);
   SocketAuthWindows.clear();
+  LOGIN_FAILURES_BY_IP.clear();
+  LOGIN_FAILURES_BY_ACCOUNT.clear();
   for (const Player of SocketPlayers.values()) ClearDisconnectTimer(Player);
   IO.close();
   HttpServer.close(async () => {
