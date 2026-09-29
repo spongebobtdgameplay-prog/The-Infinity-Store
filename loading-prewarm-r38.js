@@ -42,7 +42,6 @@ const AssetUrls = [
   "Models/Bedroom/GLB/Bed_King.glb",
   "Models/Bedroom/GLB/Bed_Single.glb",
   "Models/Bedroom/GLB/NightStand_2.glb",
-  "Models/Kitchen/GLB/Kitchen_Fridge.glb",
   `${KayKitRestaurantBase}stove_multi_decorated.gltf`,
   `${KayKitRestaurantBase}kitchencounter_sink.gltf`,
   `${KayKitRestaurantBase}kitchentable_sink.gltf`,
@@ -316,7 +315,7 @@ function StartAssetWarmup() {
 
 window.__STORE_PRELOAD_PROMISES__ = AssetPromises;
 window.__STORE_PRELOAD_RESULT__ = "tracking";
-window.__STORE_PRELOAD_BUILD__ = "V0.35.46-DEFERRED-ASSET-OWNER";
+window.__STORE_PRELOAD_BUILD__ = "V0.35.75-SHARED-ASSET-CACHE";
 window.__STORE_START_ASSET_WARMUP__ = StartAssetWarmup;
 window.__STORE_PRELOAD_COMPLETE__ = null;
 DispatchProgress();
