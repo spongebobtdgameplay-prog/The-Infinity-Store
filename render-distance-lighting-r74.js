@@ -44,7 +44,7 @@ function StabilizeGlow(Object) {
   Object.userData.StreamAmbientR101 = true;
   Object.userData.PermanentLightOffR79 = false;
   Object.userData.StoreFixtureForcedStableR89 = true;
-  Object.frustumCulled = true;
+  Object.frustumCulled = false;
   Object.renderOrder = 0;
   Object.geometry?.computeBoundingSphere?.();
   ConfigureGlowMaterial(EnsureOwnedMaterial(Object, "StoreLightGlowMaterialR89"));
