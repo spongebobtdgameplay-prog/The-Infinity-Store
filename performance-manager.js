@@ -141,30 +141,24 @@ function ApplyTextureBudget() {
 
 function CullPointLights() {
   const CurrentGame = Game();
-  if (!CurrentGame?.Scene || !CurrentGame?.Camera) return;
+  if (!CurrentGame?.Scene) return;
 
-  const Lights = [];
+  // Lighting is spatially stable. Never swap visible lights based on camera
+  // position; doing that makes the illumination appear to move through the
+  // store as the player walks.
   const Seen = new Set();
   for (const Chunk of CurrentGame.ActiveChunks?.values?.() || []) {
     for (const Object of Chunk?.Lights || []) {
       if (!Object?.isPointLight || Seen.has(Object)) continue;
       Seen.add(Object);
-      const Position = Object.userData.R43LightWorld ||= new THREE.Vector3();
-      Object.getWorldPosition(Position);
-      Lights.push({ Object, Distance: Position.distanceToSquared(CurrentGame.Camera.position) });
+      Object.visible = true;
     }
   }
   for (const Object of CurrentGame.Scene.children || []) {
     if (!Object?.isPointLight || Seen.has(Object)) continue;
     Seen.add(Object);
-    const Position = Object.userData.R43LightWorld ||= new THREE.Vector3();
-    Object.getWorldPosition(Position);
-    Lights.push({ Object, Distance: Position.distanceToSquared(CurrentGame.Camera.position) });
+    Object.visible = true;
   }
-
-  Lights.sort((A, B) => A.Distance - B.Distance);
-  const Limit = QualityProfile().PointLights;
-  for (let Index = 0; Index < Lights.length; Index += 1) Lights[Index].Object.visible = Index < Limit;
 }
 
 function ApplyPerformance() {
@@ -325,7 +319,7 @@ function BuildSettings() {
     SaveSettings();
     ApplyPerformance();
   });
-  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Changes fixed render resolution, light count and texture filtering."));
+  Body.appendChild(SettingRow("GRAPHICS", { Element: Graphics }, "Changes fixed render resolution and texture filtering; store lighting stays spatially stable."));
 
   const AmbientControl = RangeControl(0, 1, 0.01, Settings.AmbientVolume, Value => `${Math.round(Value * 100)}%`, Value => { Settings.AmbientVolume = Value; SaveSettings(); UpdateAmbient(); });
   Body.appendChild(SettingRow("STORE AMBIENT", AmbientControl, "Low HVAC noise, room tone and faint electrical hum."));
@@ -443,5 +437,5 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.71-R101-FIXED-RENDER-RATE";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.71-R101-FIXED-RENDER-RATE";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.74-STABLE-LIGHTING";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.74-STABLE-LIGHTING";
