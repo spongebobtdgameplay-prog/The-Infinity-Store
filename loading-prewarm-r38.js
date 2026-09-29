@@ -1,6 +1,30 @@
+import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const OriginalLoadAsync = GLTFLoader.prototype.loadAsync;
+const SharedAssetPromises = window.__STORE_SHARED_GLTF_PROMISES__ ||= new Map();
+THREE.Cache.enabled = true;
+
+function CanonicalAssetUrl(Url) {
+  try {
+    return new URL(String(Url), location.href).href;
+  } catch {
+    return String(Url);
+  }
+}
+
+function LoadSharedAsset(Loader, Url, Args = []) {
+  const Key = CanonicalAssetUrl(Url);
+  const Existing = SharedAssetPromises.get(Key);
+  if (Existing) return Existing;
+
+  const PromiseValue = OriginalLoadAsync.call(Loader, Url, ...Args).catch(Error => {
+    SharedAssetPromises.delete(Key);
+    throw Error;
+  });
+  SharedAssetPromises.set(Key, PromiseValue);
+  return PromiseValue;
+}
 const AssetTimeoutMs = 9000;
 const AssetRetryCount = 2;
 
@@ -183,7 +207,7 @@ function DispatchProgress() {
 }
 
 function LoadWithTimeout(Url, Loader, Args) {
-  const SourcePromise = OriginalLoadAsync.call(Loader, Url, ...Args);
+  const SourcePromise = LoadSharedAsset(Loader, Url, Args);
   let TimeoutId = 0;
 
   const TimeoutPromise = new Promise((_, Reject) => {
@@ -213,7 +237,7 @@ function GetOrStartAsset(Url, Loader, Args = []) {
     .catch(Error => {
       AssetStates.set(Url, "failed");
       AssetPromises.delete(Url);
-      console.warn(`Background warm-up skipped ${Url}`, Error);
+      console.warn("Background warm-up skipped " + Url, Error);
       throw Error;
     })
     .finally(() => {
@@ -226,7 +250,6 @@ function GetOrStartAsset(Url, Loader, Args = []) {
 }
 
 GLTFLoader.prototype.loadAsync = function(Url, ...Args) {
-  if (!TrackedAssets.has(Url)) return OriginalLoadAsync.call(this, Url, ...Args);
   return GetOrStartAsset(Url, this, Args);
 };
 
