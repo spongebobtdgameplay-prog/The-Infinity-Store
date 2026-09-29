@@ -671,7 +671,7 @@ async function GetModelTemplate(Name) {
   if (!ModelCache.has(Name)) {
     const Pending = (async () => {
       const Gltf = await LoadModelWithTimeout(Name, Definition);
-      const Fixture = Gltf.scene;
+      const Fixture = Gltf.scene.clone(true);
       PrepareModel(Name, Fixture);
 
       if (!Definition.SupportModel) return Fixture;
