@@ -50,9 +50,7 @@ const PerfState = {
   Height: 0,
   Ratio: -1,
   Quality: "",
-  TextureStamp: "",
-  AdaptiveRatio: -1,
-  LastAdaptiveAdjustAt: -Infinity
+  TextureStamp: ""
 };
 
 function ApplyCamera() {
@@ -80,11 +78,7 @@ function ApplyRenderer() {
   if (!CurrentGame?.Renderer) return;
   const Profile = QualityProfile();
   const DeviceRatio = Math.max(1, Number(devicePixelRatio) || 1);
-  const MaxRatio = Math.min(DeviceRatio, Profile.PixelRatio);
-  const Ratio =
-    PerfState.AdaptiveRatio > 0 && PerfState.Quality === Settings.Graphics
-      ? Math.min(MaxRatio, PerfState.AdaptiveRatio)
-      : MaxRatio;
+  const Ratio = Math.min(DeviceRatio, Profile.PixelRatio);
 
   if (
     PerfState.Width === innerWidth &&
@@ -104,47 +98,6 @@ function ApplyRenderer() {
   CurrentGame.Renderer.setPixelRatio(Ratio);
   CurrentGame.Renderer.setSize(innerWidth, innerHeight, false);
   ApplySafeViewport(CurrentGame.Renderer);
-}
-
-function ResetAdaptiveResolution() {
-  PerfState.AdaptiveRatio = -1;
-  PerfState.LastAdaptiveAdjustAt = -Infinity;
-}
-
-function UpdateAdaptiveResolution(FrameMs) {
-  const CurrentGame = Game();
-  if (!CurrentGame?.Renderer || !Number.isFinite(FrameMs)) return;
-
-  const Profile = QualityProfile();
-  const DeviceRatio = Math.max(1, Number(devicePixelRatio) || 1);
-  const MaxRatio = Math.min(DeviceRatio, Profile.PixelRatio);
-  const MinRatio =
-    Settings.Graphics === "performance" ? 0.72 :
-    Settings.Graphics === "high" ? 0.82 :
-    0.76;
-
-  if (PerfState.AdaptiveRatio <= 0 || PerfState.Quality !== Settings.Graphics) {
-    PerfState.AdaptiveRatio = MaxRatio;
-    PerfState.LastAdaptiveAdjustAt = performance.now();
-    ApplyRenderer();
-    return;
-  }
-
-  const Now = performance.now();
-  if (Now - PerfState.LastAdaptiveAdjustAt < 700) return;
-
-  let Next = PerfState.AdaptiveRatio;
-  if (FrameMs > 30) Next -= 0.10;
-  else if (FrameMs > 24) Next -= 0.05;
-  else if (FrameMs > 19) Next -= 0.025;
-  else if (FrameMs < 14.5) Next += 0.025;
-
-  Next = THREE.MathUtils.clamp(Next, MinRatio, MaxRatio);
-  if (Math.abs(Next - PerfState.AdaptiveRatio) < 0.001) return;
-
-  PerfState.AdaptiveRatio = Next;
-  PerfState.LastAdaptiveAdjustAt = Now;
-  ApplyRenderer();
 }
 
 function ApplyTextureBudgetToRoot(Root) {
@@ -363,7 +316,6 @@ function BuildSettings() {
     Settings.Graphics = Graphics.value;
     PerfState.TextureStamp = "";
     PerfState.Quality = "";
-    ResetAdaptiveResolution();
     SaveSettings();
     ApplyPerformance();
   });
@@ -465,7 +417,6 @@ function FpsFrame(Now) {
     for (const Sample of Samples) Sum += Sample;
     const Average = Sum / Samples.length;
     const Fps = 1000 / Average;
-    window.__STORE_UPDATE_ADAPTIVE_RESOLUTION__?.(Average);
     const Sorted = [...Samples].sort((A, B) => A - B);
     const P95 = Sorted[Math.floor((Sorted.length - 1) * 0.95)];
     const Renderer = Game()?.Renderer;
@@ -486,7 +437,6 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.77-STABLE-HANDOFF-DRS";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.77-STABLE-HANDOFF-DRS";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.78-FIXED-PIXEL-RATIO";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.78-FIXED-PIXEL-RATIO";
 
-window.__STORE_UPDATE_ADAPTIVE_RESOLUTION__ = UpdateAdaptiveResolution;
