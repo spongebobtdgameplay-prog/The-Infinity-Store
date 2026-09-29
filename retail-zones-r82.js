@@ -52,7 +52,7 @@ async function LoadTemplate(Key) {
   if (!Definition) throw new Error(`Unknown retail-zone asset ${Key}`);
   if (!Templates.has(Key)) {
     Templates.set(Key, Loader.loadAsync(Definition.Url).then(Gltf => {
-      const Root = Gltf.scene;
+      const Root = Gltf.scene.clone(true);
       Root.name = `RetailZoneTemplate-${Key}`;
       Root.userData.Source = Definition.Source;
       Root.userData.License = "CC0-1.0";
