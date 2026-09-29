@@ -1,4 +1,4 @@
-const Cache = "20260929-v03578-fixed-ratio-progress";
+const Cache = "20260929-v03578-sharp-fixed-ratio";
 const Version = "0.35.78";
 const FaviconVersion = "20260824-4";
 const FaviconLinks = [
