@@ -13,15 +13,39 @@ function CanonicalAssetUrl(Url) {
   }
 }
 
+const SharedAssetQueue = window.__STORE_SHARED_GLTF_QUEUE__ ||= [];
+let SharedAssetActive = 0;
+const SHARED_ASSET_MAX_CONCURRENCY = 2;
+
+function PumpSharedAssetQueue() {
+  while (SharedAssetActive < SHARED_ASSET_MAX_CONCURRENCY && SharedAssetQueue.length) {
+    const Entry = SharedAssetQueue.shift();
+    if (!Entry) continue;
+
+    SharedAssetActive += 1;
+    Promise.resolve()
+      .then(() => OriginalLoadAsync.call(Entry.Loader, Entry.Url, ...Entry.Args))
+      .then(Result => Entry.Resolve(Result), Error => {
+        SharedAssetPromises.delete(Entry.Key);
+        Entry.Reject(Error);
+      })
+      .finally(() => {
+        SharedAssetActive -= 1;
+        PumpSharedAssetQueue();
+      });
+  }
+}
+
 function LoadSharedAsset(Loader, Url, Args = []) {
   const Key = CanonicalAssetUrl(Url);
   const Existing = SharedAssetPromises.get(Key);
   if (Existing) return Existing;
 
-  const PromiseValue = OriginalLoadAsync.call(Loader, Url, ...Args).catch(Error => {
-    SharedAssetPromises.delete(Key);
-    throw Error;
+  const PromiseValue = new Promise((Resolve, Reject) => {
+    SharedAssetQueue.push({ Key, Loader, Url, Args, Resolve, Reject });
+    PumpSharedAssetQueue();
   });
+
   SharedAssetPromises.set(Key, PromiseValue);
   return PromiseValue;
 }
@@ -318,7 +342,7 @@ function StartAssetWarmup() {
 
 window.__STORE_PRELOAD_PROMISES__ = AssetPromises;
 window.__STORE_PRELOAD_RESULT__ = "tracking";
-window.__STORE_PRELOAD_BUILD__ = "V0.35.75-SHARED-ASSET-CACHE";
+window.__STORE_PRELOAD_BUILD__ = "V0.35.77-SHARED-ASSET-CACHE-THROTTLED";
 window.__STORE_START_ASSET_WARMUP__ = StartAssetWarmup;
 window.__STORE_PRELOAD_COMPLETE__ = null;
 DispatchProgress();
