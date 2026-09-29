@@ -437,5 +437,5 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.74-STABLE-LIGHTING";
-window.__STORE_SETTINGS_BUILD__ = "V0.35.74-STABLE-LIGHTING";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.76-STABLE-LIGHTING";
+window.__STORE_SETTINGS_BUILD__ = "V0.35.76-STABLE-LIGHTING";
