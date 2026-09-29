@@ -4,7 +4,9 @@ export const STREAM_RANGE = Object.freeze({
   ActiveRadius: 3,
   ActiveBack: 1,
   ActiveAhead: 3,
-  PrefetchRadius: 1,
+  // Prefetch through the full active horizon so the next new aisle is built
+  // while the player is still one aisle or more away from reaching it.
+  PrefetchRadius: 3,
   BootCount: 4
 });
 
