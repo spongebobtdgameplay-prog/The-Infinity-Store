@@ -78,7 +78,7 @@ function OriginAllowed(Origin) {
 }
 
 function IsLocalDatabaseUrl(Value) {
-  return /^(postgres|postgresql):\/\/(localhost|127\.0\.0\.1)(?::\\d+)?(?:\/|$)/i.test(Value);
+  return /^(postgres|postgresql):\/\/(localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(Value);
 }
 
 function ShouldUseSSL() {
@@ -386,13 +386,23 @@ App.post("/api/auth/register", AuthLimiter, async (Request, Response) => {
   }
 });
 
+const DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$hQvKtkvC9V7dx98pz757FlogMr4Jq5BOJsj0hezC/fg";
+
 App.post("/api/auth/login", AuthLimiter, async (Request, Response) => {
   const Username = NormalizeUsername(Request.body?.username);
   const Password = String(Request.body?.password || "");
   if (!Username || !Password) return Response.status(400).json({ ok: false, error: "MISSING_CREDENTIALS" });
   if (ValidateUsername(Username) || ValidatePassword(Password)) {
-    return Response.status(401).json({ ok: false, error: "INVALID_LOGIN" });
+    return Response.status(401).json({ ok: false, error: LOGIN_GENERIC_ERROR });
   }
+
+  const AccountKey = HashLoginKey(UsernameKey(Username));
+  const IpKey = HashLoginKey(LoginClientIp(Request));
+  const Throttle = GetLoginThrottleInfo(IpKey, AccountKey);
+  if (Throttle.lockedUntil > Date.now()) {
+    return Response.status(401).json({ ok: false, error: LOGIN_GENERIC_ERROR });
+  }
+  await Sleep(LoginDelayMs(Throttle.failures));
 
   try {
     const Result = await Database.query(
@@ -401,9 +411,16 @@ App.post("/api/auth/login", AuthLimiter, async (Request, Response) => {
       [UsernameKey(Username)]
     );
     const Row = Result.rows[0];
-    if (!Row || Row.disabled) return Response.status(401).json({ ok: false, error: "INVALID_LOGIN" });
-    const Valid = await argon2.verify(Row.password_hash, Password);
-    if (!Valid) return Response.status(401).json({ ok: false, error: "INVALID_LOGIN" });
+    const Valid = Row && !Row.disabled
+      ? await argon2.verify(Row.password_hash, Password)
+      : await argon2.verify(DUMMY_PASSWORD_HASH, Password);
+
+    if (!Row || Row.disabled || !Valid) {
+      RecordLoginFailureFor(IpKey, AccountKey);
+      return Response.status(401).json({ ok: false, error: LOGIN_GENERIC_ERROR });
+    }
+
+    ClearLoginFailures(IpKey, AccountKey);
 
     const [Session, ProfileResult] = await Promise.all([
       CreateSession(Row.id, Request.headers["user-agent"]),
