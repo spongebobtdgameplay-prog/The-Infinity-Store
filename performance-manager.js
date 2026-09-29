@@ -41,8 +41,8 @@ function Game() {
 
 function QualityProfile() {
   if (Settings.Graphics === "performance") return { PixelRatio: 1.00, PointLights: 2, Anisotropy: 1 };
-  if (Settings.Graphics === "high") return { PixelRatio: 1.35, PointLights: 4, Anisotropy: 4 };
-  return { PixelRatio: 1.15, PointLights: 3, Anisotropy: 2 };
+  if (Settings.Graphics === "high") return { PixelRatio: 1.50, PointLights: 4, Anisotropy: 4 };
+  return { PixelRatio: 1.35, PointLights: 3, Anisotropy: 2 };
 }
 
 const PerfState = {
@@ -437,6 +437,6 @@ setTimeout(ApplyPerformance, 0);
 requestAnimationFrame(FpsFrame);
 window.__STORE_APPLY_PERFORMANCE__ = ApplyPerformance;
 window.__STORE_APPLY_TEXTURE_BUDGET_TO_CHUNK__ = ApplyTextureBudgetToChunk;
-window.__STORE_PERFORMANCE_BUILD__ = "V0.35.78-FIXED-PIXEL-RATIO";
+window.__STORE_PERFORMANCE_BUILD__ = "V0.35.78-SHARP-FIXED-RATIO";
 window.__STORE_SETTINGS_BUILD__ = "V0.35.78-FIXED-PIXEL-RATIO";
 
